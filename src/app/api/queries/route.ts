@@ -5,7 +5,7 @@ import { toErrorResponse, HttpError } from "@/lib/rbac";
 import { signCustomerToken } from "@/lib/auth";
 import { gateByEmbedKey } from "@/lib/tenant-context";
 import { resolvePlanLimit, checkQueryQuota } from "@/lib/plan";
-import { isImageModel, isLlmModel, DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL } from "@/lib/models";
+import { isImageModel, DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL } from "@/lib/models";
 
 const Body = z.object({
   embedKey: z.string().min(6),
@@ -16,7 +16,8 @@ const Body = z.object({
   customerName: z.string().max(120).optional(),
   customerEmail: z.string().email().optional(),
   customerPhone: z.string().max(40).optional(),
-  llmChoice: z.string().max(60).optional(),
+  // Customers pick the image model only. The assistant/LLM used for the
+  // feasibility check + brief write-up is a platform default (no chat surface).
   imageModelChoice: z.string().max(60).optional(),
 });
 
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
         customerName: body.customerName,
         customerEmail: body.customerEmail,
         customerPhone: body.customerPhone,
-        llmChoice: isLlmModel(body.llmChoice) ? body.llmChoice : DEFAULT_LLM_MODEL,
+        llmChoice: DEFAULT_LLM_MODEL,
         imageModelChoice: isImageModel(body.imageModelChoice)
           ? body.imageModelChoice
           : DEFAULT_IMAGE_MODEL,

@@ -13,13 +13,7 @@ import {
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { dateTime } from "@/lib/format";
-import {
-  IMAGE_MODELS,
-  LLM_MODELS,
-  DEFAULT_IMAGE_MODEL,
-  DEFAULT_LLM_MODEL,
-  type ModelOption,
-} from "@/lib/models";
+import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, type ModelOption } from "@/lib/models";
 
 type Step = "consent" | "describe" | "loading" | "review" | "handoff" | "booked" | "escalated";
 
@@ -64,7 +58,6 @@ export function IntakeWidget({
     customerEmail: "",
     customerPhone: "",
   });
-  const [llmChoice, setLlmChoice] = useState<string>(DEFAULT_LLM_MODEL);
   const [imageModelChoice, setImageModelChoice] = useState<string>(DEFAULT_IMAGE_MODEL);
 
   const [token, setToken] = useState<string | null>(null);
@@ -166,7 +159,6 @@ export function IntakeWidget({
           customerName: form.customerName || undefined,
           customerEmail: form.customerEmail || undefined,
           customerPhone: form.customerPhone || undefined,
-          llmChoice,
           imageModelChoice,
         }),
       });
@@ -364,21 +356,11 @@ export function IntakeWidget({
             />
           </Fieldset>
 
-          {/* Choose your LLM */}
-          <ModelPicker
-            id="llm-model"
-            title="Choose your assistant model"
-            hint="It interprets your feedback and writes the brief for the designer."
-            options={LLM_MODELS}
-            value={llmChoice}
-            onChange={setLlmChoice}
-          />
-
           {/* Choose image generation model */}
           <ModelPicker
             id="image-model"
             title="Choose the image generation model"
-            hint="You can't change this mid-session."
+            hint="Different models have different visual styles. You can't change this mid-session."
             options={IMAGE_MODELS}
             value={imageModelChoice}
             onChange={setImageModelChoice}

@@ -3,14 +3,13 @@ import { db } from "@/lib/db";
 import { readJson } from "@/lib/http";
 import { toErrorResponse, HttpError } from "@/lib/rbac";
 import { requireCustomerQuery } from "@/lib/intake";
-import { isImageModel, isLlmModel } from "@/lib/models";
+import { isImageModel } from "@/lib/models";
 
 const Body = z.object({
   descriptionText: z.string().max(4000).optional(),
   customerName: z.string().max(120).nullish(),
   customerEmail: z.string().email().nullish(),
   customerPhone: z.string().max(40).nullish(),
-  llmChoice: z.string().max(60).optional(),
   imageModelChoice: z.string().max(60).optional(),
 });
 
@@ -31,7 +30,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         customerName: body.customerName ?? undefined,
         customerEmail: body.customerEmail ?? undefined,
         customerPhone: body.customerPhone ?? undefined,
-        llmChoice: isLlmModel(body.llmChoice) ? body.llmChoice : undefined,
         imageModelChoice: isImageModel(body.imageModelChoice) ? body.imageModelChoice : undefined,
       },
     });
@@ -39,7 +37,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       query: {
         id: updated.id,
         descriptionText: updated.descriptionText,
-        llmChoice: updated.llmChoice,
         imageModelChoice: updated.imageModelChoice,
         status: updated.status,
       },
