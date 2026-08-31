@@ -10,6 +10,8 @@ export interface ImageGenAdapter {
     prompt: string;
     count: number;
     tier: ImageModelTier;
+    /** Customer-selected model id (e.g. "flux-pro", "dall-e-3"). */
+    model?: string | null;
     seed?: string;
   }): Promise<{ images: GeneratedImage[]; units: number }>;
 }
@@ -21,20 +23,19 @@ export interface TranscriptionAdapter {
 export interface LlmAdapter {
   feasibilityCheck(input: {
     description: string;
-    dimensions?: string | null;
-    material?: string | null;
+    model?: string | null;
   }): Promise<{ flagged: boolean; notes: string | null; tokens: number }>;
 
   compileHandoff(input: {
     description: string;
-    dimensions?: string | null;
-    material?: string | null;
-    useCase?: string | null;
+    model?: string | null;
+    contact?: { name?: string | null; email?: string | null; phone?: string | null };
     rounds: Array<{
       round: number;
       overallMatchPct: number | null;
       changeRequest: string | null;
     }>;
+    ranking?: string[];
     finalMatchPct: number;
   }): Promise<{ summaryText: string; tokens: number }>;
 }

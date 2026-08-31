@@ -3,15 +3,15 @@ import { db } from "@/lib/db";
 import { readJson } from "@/lib/http";
 import { toErrorResponse, HttpError } from "@/lib/rbac";
 import { requireCustomerQuery } from "@/lib/intake";
+import { isImageModel, isLlmModel } from "@/lib/models";
 
 const Body = z.object({
   descriptionText: z.string().max(4000).optional(),
-  dimensions: z.string().max(200).nullish(),
-  materialPreference: z.string().max(200).nullish(),
-  useCase: z.string().max(500).nullish(),
   customerName: z.string().max(120).nullish(),
   customerEmail: z.string().email().nullish(),
   customerPhone: z.string().max(40).nullish(),
+  llmChoice: z.string().max(60).optional(),
+  imageModelChoice: z.string().max(60).optional(),
 });
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -28,21 +28,19 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       where: { id: query.id },
       data: {
         descriptionText: body.descriptionText ?? undefined,
-        dimensions: body.dimensions ?? undefined,
-        materialPreference: body.materialPreference ?? undefined,
-        useCase: body.useCase ?? undefined,
         customerName: body.customerName ?? undefined,
         customerEmail: body.customerEmail ?? undefined,
         customerPhone: body.customerPhone ?? undefined,
+        llmChoice: isLlmModel(body.llmChoice) ? body.llmChoice : undefined,
+        imageModelChoice: isImageModel(body.imageModelChoice) ? body.imageModelChoice : undefined,
       },
     });
     return Response.json({
       query: {
         id: updated.id,
         descriptionText: updated.descriptionText,
-        dimensions: updated.dimensions,
-        materialPreference: updated.materialPreference,
-        useCase: updated.useCase,
+        llmChoice: updated.llmChoice,
+        imageModelChoice: updated.imageModelChoice,
         status: updated.status,
       },
     });

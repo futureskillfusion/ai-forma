@@ -5,6 +5,7 @@ import { toErrorResponse, HttpError } from "@/lib/rbac";
 import { signCustomerToken } from "@/lib/auth";
 import { gateByEmbedKey } from "@/lib/tenant-context";
 import { resolvePlanLimit, checkQueryQuota } from "@/lib/plan";
+import { isImageModel, isLlmModel, DEFAULT_IMAGE_MODEL, DEFAULT_LLM_MODEL } from "@/lib/models";
 
 const Body = z.object({
   embedKey: z.string().min(6),
@@ -12,12 +13,11 @@ const Body = z.object({
     errorMap: () => ({ message: "Consent must be confirmed before starting" }),
   }),
   descriptionText: z.string().max(4000).optional().default(""),
-  dimensions: z.string().max(200).optional(),
-  materialPreference: z.string().max(200).optional(),
-  useCase: z.string().max(500).optional(),
   customerName: z.string().max(120).optional(),
   customerEmail: z.string().email().optional(),
   customerPhone: z.string().max(40).optional(),
+  llmChoice: z.string().max(60).optional(),
+  imageModelChoice: z.string().max(60).optional(),
 });
 
 export async function POST(req: Request) {
@@ -42,12 +42,13 @@ export async function POST(req: Request) {
         consentConfirmed: true,
         consentConfirmedAt: new Date(),
         descriptionText: body.descriptionText ?? "",
-        dimensions: body.dimensions,
-        materialPreference: body.materialPreference,
-        useCase: body.useCase,
         customerName: body.customerName,
         customerEmail: body.customerEmail,
         customerPhone: body.customerPhone,
+        llmChoice: isLlmModel(body.llmChoice) ? body.llmChoice : DEFAULT_LLM_MODEL,
+        imageModelChoice: isImageModel(body.imageModelChoice)
+          ? body.imageModelChoice
+          : DEFAULT_IMAGE_MODEL,
         matchThreshold: 80,
         status: "describing",
       },

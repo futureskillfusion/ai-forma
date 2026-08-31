@@ -18,6 +18,9 @@ const Body = z.object({
     })
     .optional(),
   changeRequestText: z.string().max(2000).optional(),
+  // Ordered variation ids the customer dragged into their preference bucket,
+  // top pick first. The first id should be this rating's variation.
+  ranking: z.array(z.string().uuid()).max(12).optional(),
 });
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -31,11 +34,31 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (!variation) throw new HttpError(404, "Variation not found for this query");
 
     const body = await readJson(req, Body);
+    const { ranking, ...ratingData } = body;
     const rating = await db.rating.upsert({
       where: { variationId },
-      create: { variationId, ...body, annotationData: body.annotationData ?? undefined },
-      update: { ...body, annotationData: body.annotationData ?? undefined },
+      create: { variationId, ...ratingData, annotationData: ratingData.annotationData ?? undefined },
+      update: { ...ratingData, annotationData: ratingData.annotationData ?? undefined },
     });
+
+    // Persist the customer's concept ranking for this session (last round wins).
+    if (ranking && ranking.length > 0) {
+      const validIds = new Set(
+        (
+          await db.variation.findMany({
+            where: { id: { in: ranking }, queryId: query.id },
+            select: { id: true },
+          })
+        ).map((v) => v.id),
+      );
+      const cleaned = ranking.filter((rid) => validIds.has(rid));
+      if (cleaned.length > 0) {
+        await db.query.update({
+          where: { id: query.id },
+          data: { conceptRankingJson: cleaned },
+        });
+      }
+    }
 
     const limit = await resolvePlanLimit(
       await db.tenant.findUniqueOrThrow({ where: { id: query.tenantId } }),

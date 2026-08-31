@@ -256,9 +256,19 @@ model Query {
 
   descriptionText     String  @default("")
   descriptionAudioUrl String?
+  // Legacy structured spec fields — no longer collected in the widget, kept
+  // nullable so historic rows still read.
   dimensions          String?
   materialPreference  String?
   useCase             String?
+
+  // Customer-chosen models (from the widget). Free choice in this build.
+  llmChoice        String?
+  imageModelChoice String?
+
+  // Ordered variation ids from the last round the customer ranked
+  // (drag-and-drop preference on the review step). [topPick, secondPick, ...]
+  conceptRankingJson Json?
 
   status      QueryStatus @default(describing)
   matchThreshold Int      @default(80) // % — configurable per query, seeded from plan

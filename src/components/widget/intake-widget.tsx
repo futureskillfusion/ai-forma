@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Fieldset, Input, Textarea } from "@/components/ui/field";
+import { Fieldset, Input, Textarea, Select, Label, FieldHint } from "@/components/ui/field";
 import {
   ShieldCheck,
   Sparkles,
@@ -13,6 +13,13 @@ import {
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { dateTime } from "@/lib/format";
+import {
+  IMAGE_MODELS,
+  LLM_MODELS,
+  DEFAULT_IMAGE_MODEL,
+  DEFAULT_LLM_MODEL,
+  type ModelOption,
+} from "@/lib/models";
 
 type Step = "consent" | "describe" | "loading" | "review" | "handoff" | "booked" | "escalated";
 
@@ -53,19 +60,22 @@ export function IntakeWidget({
   const [consent, setConsent] = useState(false);
   const [form, setForm] = useState({
     descriptionText: "",
-    dimensions: "",
-    materialPreference: "",
-    useCase: "",
     customerName: "",
     customerEmail: "",
+    customerPhone: "",
   });
+  const [llmChoice, setLlmChoice] = useState<string>(DEFAULT_LLM_MODEL);
+  const [imageModelChoice, setImageModelChoice] = useState<string>(DEFAULT_IMAGE_MODEL);
 
   const [token, setToken] = useState<string | null>(null);
   const [queryId, setQueryId] = useState<string | null>(null);
   const [variations, setVariations] = useState<Variation[]>([]);
   const [round, setRound] = useState(0);
   const [maxRounds, setMaxRounds] = useState(5);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Drag-and-drop concept ranking for the current round.
+  const [ranking, setRanking] = useState<string[]>([]); // ordered variation ids, top pick first
+  const [dragId, setDragId] = useState<string | null>(null);
 
   const [rating, setRating] = useState({
     overallMatchPct: 70,
@@ -104,6 +114,38 @@ export function IntakeWidget({
     () => variations.filter((v) => v.roundNumber === round),
     [variations, round],
   );
+  const pool = useMemo(
+    () => currentRoundVariations.filter((v) => !ranking.includes(v.id)),
+    [currentRoundVariations, ranking],
+  );
+  const topPick = ranking[0] ?? null;
+  const byId = (id: string) => currentRoundVariations.find((v) => v.id === id);
+
+  // ── ranking helpers ───────────────────────────────────────────────────────
+  function addToRanking(id: string, atIndex?: number) {
+    setRanking((r) => {
+      const without = r.filter((x) => x !== id);
+      const idx = atIndex === undefined ? without.length : atIndex;
+      return [...without.slice(0, idx), id, ...without.slice(idx)];
+    });
+  }
+  function removeFromRanking(id: string) {
+    setRanking((r) => r.filter((x) => x !== id));
+  }
+  function move(id: string, dir: -1 | 1) {
+    setRanking((r) => {
+      const i = r.indexOf(id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= r.length) return r;
+      const copy = [...r];
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+      return copy;
+    });
+  }
+  function onDrop(atIndex?: number) {
+    if (dragId) addToRanking(dragId, atIndex);
+    setDragId(null);
+  }
 
   async function startGeneration() {
     setError(null);
@@ -121,11 +163,11 @@ export function IntakeWidget({
           embedKey,
           consentConfirmed: true,
           descriptionText: form.descriptionText,
-          dimensions: form.dimensions || undefined,
-          materialPreference: form.materialPreference || undefined,
-          useCase: form.useCase || undefined,
           customerName: form.customerName || undefined,
           customerEmail: form.customerEmail || undefined,
+          customerPhone: form.customerPhone || undefined,
+          llmChoice,
+          imageModelChoice,
         }),
       });
       setToken(created.token);
@@ -142,7 +184,7 @@ export function IntakeWidget({
   async function runGenerate(tok?: string, qid?: string) {
     setBusy(true);
     setStep("loading");
-    setLoadingLabel("Generating image variations…");
+    setLoadingLabel("Generating concepts…");
     const authToken = tok ?? token;
     const targetQueryId = qid ?? queryId;
     try {
@@ -159,7 +201,7 @@ export function IntakeWidget({
       setRound(data.round);
       setMaxRounds(data.maxRounds);
       setVariations((prev) => [...prev, ...data.variations]);
-      setSelectedId(data.variations[0]?.id ?? null);
+      setRanking([]); // fresh ranking each round
       setRating((r) => ({ ...r, changeRequestText: "" }));
       setStep("review");
     } catch (e) {
@@ -171,11 +213,13 @@ export function IntakeWidget({
   }
 
   async function submitRating(): Promise<{ canIterate: boolean; meetsThreshold: boolean } | null> {
-    if (!selectedId) {
-      setError("Select the variation that's closest first.");
+    const pick = topPick ?? currentRoundVariations[0]?.id ?? null;
+    if (!pick) {
+      setError("Rank at least your top concept first.");
       return null;
     }
-    const data = await api(`/api/variations/${selectedId}/ratings`, {
+    const orderedRanking = ranking.length ? ranking : [pick];
+    const data = await api(`/api/variations/${pick}/ratings`, {
       method: "POST",
       authed: true,
       body: JSON.stringify({
@@ -184,6 +228,7 @@ export function IntakeWidget({
         sizeScore: rating.sizeScore,
         materialScore: rating.materialScore,
         changeRequestText: rating.changeRequestText || undefined,
+        ranking: orderedRanking,
       }),
     });
     return { canIterate: data.guidance.canIterate, meetsThreshold: data.guidance.meetsThreshold };
@@ -213,6 +258,11 @@ export function IntakeWidget({
 
   async function proceed() {
     setError(null);
+    const pick = topPick ?? currentRoundVariations[0]?.id ?? null;
+    if (!pick) {
+      setError("Rank at least your top concept first.");
+      return;
+    }
     setBusy(true);
     setStep("loading");
     setLoadingLabel("Compiling your handoff packet…");
@@ -221,7 +271,7 @@ export function IntakeWidget({
       const data = await api(`/api/queries/${queryId}/handoff`, {
         method: "POST",
         authed: true,
-        body: JSON.stringify({ finalVariationId: selectedId }),
+        body: JSON.stringify({ finalVariationId: pick }),
       });
       setPacket(data.packet);
       setSlots(data.booking.slots ?? []);
@@ -268,7 +318,7 @@ export function IntakeWidget({
         <section>
           <h1 className="text-xl font-extrabold tracking-tight">Turn your idea into a design brief</h1>
           <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">
-            Describe what you want to make. {brandName} will generate visual concepts you can rate and
+            Describe what you want to make. {brandName} will generate visual concepts you can rank and
             refine, then book you with a designer — no cost to explore.
           </p>
           <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-md border border-[var(--color-border)] bg-[var(--color-card)] p-4">
@@ -301,36 +351,59 @@ export function IntakeWidget({
       )}
 
       {step === "describe" && (
-        <section className="space-y-4">
+        <section className="space-y-6">
           <h1 className="text-xl font-extrabold tracking-tight">Describe your idea</h1>
+
           <Fieldset label="What do you want to make?" htmlFor="desc">
             <Textarea
               id="desc"
               rows={4}
               value={form.descriptionText}
               onChange={set("descriptionText")}
-              placeholder="A wall-mounted planter shaped like a crescent moon, matte finish, holds one small succulent…"
+              placeholder="A wall-mounted planter shaped like a crescent moon, matte white finish, holds one small succulent…"
             />
           </Fieldset>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Fieldset label="Rough dimensions" htmlFor="dim" hint="Optional">
-              <Input id="dim" value={form.dimensions} onChange={set("dimensions")} placeholder="20 x 15 x 8 cm" />
-            </Fieldset>
-            <Fieldset label="Material preference" htmlFor="mat" hint="Optional">
-              <Input id="mat" value={form.materialPreference} onChange={set("materialPreference")} placeholder="Matte PLA, white" />
-            </Fieldset>
+
+          {/* Contact details */}
+          <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+            <p className="text-sm font-bold">Contact details</p>
+            <p className="mt-0.5 mb-3 text-xs text-[var(--color-muted-foreground)]">
+              Optional — so {brandName} can send your concepts and appointment details.
+            </p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Fieldset label="Full name" htmlFor="cn">
+                <Input id="cn" value={form.customerName} onChange={set("customerName")} autoComplete="name" />
+              </Fieldset>
+              <Fieldset label="Email" htmlFor="ce">
+                <Input id="ce" type="email" value={form.customerEmail} onChange={set("customerEmail")} autoComplete="email" />
+              </Fieldset>
+            </div>
+            <div className="mt-4">
+              <Fieldset label="Phone" htmlFor="cp">
+                <Input id="cp" type="tel" value={form.customerPhone} onChange={set("customerPhone")} autoComplete="tel" />
+              </Fieldset>
+            </div>
           </div>
-          <Fieldset label="What's it for?" htmlFor="uc" hint="Optional">
-            <Input id="uc" value={form.useCase} onChange={set("useCase")} placeholder="Indoor wall decor" />
-          </Fieldset>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Fieldset label="Your name" htmlFor="cn" hint="Optional">
-              <Input id="cn" value={form.customerName} onChange={set("customerName")} />
-            </Fieldset>
-            <Fieldset label="Email for updates" htmlFor="ce" hint="Optional">
-              <Input id="ce" type="email" value={form.customerEmail} onChange={set("customerEmail")} />
-            </Fieldset>
-          </div>
+
+          {/* Choose your LLM */}
+          <ModelPicker
+            id="llm-model"
+            title="Choose your assistant model"
+            hint="It interprets your feedback and writes the brief for the designer."
+            options={LLM_MODELS}
+            value={llmChoice}
+            onChange={setLlmChoice}
+          />
+
+          {/* Choose image generation model */}
+          <ModelPicker
+            id="image-model"
+            title="Choose the image generation model"
+            hint="You can't change this mid-session."
+            options={IMAGE_MODELS}
+            value={imageModelChoice}
+            onChange={setImageModelChoice}
+          />
 
           {aiDisabled && (
             <p className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
@@ -342,7 +415,7 @@ export function IntakeWidget({
           <div className="flex gap-2">
             <Button variant="ghost" onClick={() => setStep("consent")}>Back</Button>
             <Button className="flex-1" size="lg" style={brand} disabled={busy || aiDisabled} onClick={startGeneration}>
-              <Sparkles className="h-4 w-4" /> Generate images
+              <Sparkles className="h-4 w-4" /> Generate concepts
             </Button>
           </div>
         </section>
@@ -362,49 +435,113 @@ export function IntakeWidget({
         <section className="space-y-5">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-extrabold tracking-tight">Round {round} of up to {maxRounds}</h1>
-            <span className="text-xs font-semibold text-[var(--color-muted-foreground)]">Pick the closest</span>
+            <span className="text-xs font-semibold text-[var(--color-muted-foreground)]">Drag to rank</span>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {currentRoundVariations.map((v) => {
-              const selected = selectedId === v.id;
-              return (
-                <button
+          <p className="text-sm text-[var(--color-muted-foreground)]">
+            Drag the concepts into the ranking box in order of preference — your{" "}
+            <span className="font-semibold text-[var(--color-foreground)]">#1</span> is the one we refine or send to the designer.
+          </p>
+
+          {/* Concept pool */}
+          <div>
+            <p className="mb-2 text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+              Concepts {pool.length > 0 ? `(${pool.length} unranked)` : "(all ranked)"}
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {pool.map((v) => (
+                <ConceptCard
                   key={v.id}
-                  type="button"
-                  onClick={() => setSelectedId(v.id)}
-                  className={cn(
-                    "group relative overflow-hidden rounded-lg border-2 text-left transition-colors",
-                    selected ? "border-[var(--brand)]" : "border-[var(--color-border)] hover:border-[var(--color-input)]",
-                  )}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={v.imageUrl} alt="Generated concept" className="aspect-square w-full object-cover" />
-                  {selected && (
+                  variation={v}
+                  color={primaryColor}
+                  draggable
+                  onDragStart={() => setDragId(v.id)}
+                  onDragEnd={() => setDragId(null)}
+                  action={{ label: "Add to ranking", onClick: () => addToRanking(v.id) }}
+                />
+              ))}
+              {pool.length === 0 && (
+                <p className="col-span-full rounded-md border border-dashed border-[var(--color-border)] py-4 text-center text-xs text-[var(--color-muted-foreground)]">
+                  Every concept is in your ranking below.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Ranking bucket */}
+          <div
+            onDragOver={(e) => {
+              if (dragId) e.preventDefault();
+            }}
+            onDrop={() => onDrop()}
+            className={cn(
+              "rounded-lg border-2 border-dashed p-3 transition-colors",
+              dragId ? "border-[var(--brand)] bg-[color-mix(in_srgb,var(--brand)_6%,transparent)]" : "border-[var(--color-border)]",
+            )}
+          >
+            <p className="mb-2 flex items-center gap-1.5 px-1 text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+              Your ranking
+              {ranking.length === 0 && <span className="font-medium normal-case">— drag concepts here</span>}
+            </p>
+            <ol className="space-y-2">
+              {ranking.map((id, i) => {
+                const v = byId(id);
+                if (!v) return null;
+                return (
+                  <li
+                    key={id}
+                    draggable
+                    onDragStart={() => setDragId(id)}
+                    onDragEnd={() => setDragId(null)}
+                    onDragOver={(e) => {
+                      if (dragId && dragId !== id) e.preventDefault();
+                    }}
+                    onDrop={(e) => {
+                      e.stopPropagation();
+                      onDrop(i);
+                    }}
+                    className={cn(
+                      "flex items-center gap-3 rounded-md border bg-[var(--color-card)] p-2",
+                      i === 0 ? "border-[var(--brand)]" : "border-[var(--color-border)]",
+                    )}
+                  >
                     <span
-                      className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-white"
+                      className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-extrabold text-white"
                       style={brand}
                     >
-                      <Check className="h-4 w-4" />
+                      {i + 1}
                     </span>
-                  )}
-                  {v.feasibilityFlag && (
-                    <span className="absolute inset-x-0 bottom-0 flex items-center gap-1 bg-amber-500/90 px-2 py-1 text-[10px] font-semibold text-white">
-                      <TriangleAlert className="h-3 w-3" /> Print check
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={v.imageUrl} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
+                    <span className="min-w-0 flex-1 text-sm font-semibold">
+                      Concept {currentRoundVariations.indexOf(v) + 1}
+                      {i === 0 && <span className="ml-1 text-xs font-bold" style={{ color: primaryColor }}>· top pick</span>}
+                      {v.feasibilityFlag && (
+                        <span className="block text-xs font-medium text-[var(--color-warning)]">Print check flagged</span>
+                      )}
                     </span>
-                  )}
-                </button>
-              );
-            })}
+                    <span className="flex shrink-0 items-center gap-1">
+                      <IconBtn label="Move up" disabled={i === 0} onClick={() => move(id, -1)}>↑</IconBtn>
+                      <IconBtn label="Move down" disabled={i === ranking.length - 1} onClick={() => move(id, 1)}>↓</IconBtn>
+                      <IconBtn label="Remove from ranking" onClick={() => removeFromRanking(id)}>✕</IconBtn>
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
           </div>
 
-          {selectedId && currentRoundVariations.find((v) => v.id === selectedId)?.feasibilityNotes && (
+          {topPick && byId(topPick)?.feasibilityNotes && (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              {currentRoundVariations.find((v) => v.id === selectedId)?.feasibilityNotes}
+              {byId(topPick)?.feasibilityNotes}
             </p>
           )}
 
+          {/* Rating of the top pick */}
           <div className="space-y-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+            <p className="text-sm font-bold">
+              How close is your #1 pick{topPick ? ` (Concept ${currentRoundVariations.indexOf(byId(topPick)!) + 1})` : ""}?
+            </p>
             <div>
               <div className="flex items-center justify-between">
                 <label htmlFor="match" className="text-sm font-semibold">Overall match</label>
@@ -528,7 +665,7 @@ export function IntakeWidget({
           <p className="mx-auto mt-2 max-w-sm text-sm text-[var(--color-muted-foreground)]">
             Your session with a {brandName} designer is set for{" "}
             <span className="font-semibold text-[var(--color-foreground)]">{dateTime(appointment.scheduledAt)}</span>{" "}
-            ({appointment.durationMinutes} min). Your full brief and chosen concept have been shared with them.
+            ({appointment.durationMinutes} min). Your full brief and ranked concepts have been shared with them.
           </p>
         </section>
       )}
@@ -545,6 +682,100 @@ export function IntakeWidget({
           </p>
         </section>
       )}
+    </div>
+  );
+}
+
+// ── sub-components ──────────────────────────────────────────────────────────
+
+function ConceptCard({
+  variation,
+  color,
+  action,
+  ...dnd
+}: {
+  variation: Variation;
+  color: string;
+  action: { label: string; onClick: () => void };
+} & React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
+      {...dnd}
+      className="group overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]"
+    >
+      <div className="relative cursor-grab active:cursor-grabbing">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={variation.imageUrl} alt="Generated concept" className="aspect-square w-full object-cover" />
+        {variation.feasibilityFlag && (
+          <span className="absolute inset-x-0 bottom-0 flex items-center gap-1 bg-amber-500/90 px-2 py-1 text-[10px] font-semibold text-white">
+            <TriangleAlert className="h-3 w-3" /> Print check
+          </span>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={action.onClick}
+        className="w-full border-t border-[var(--color-border)] px-2 py-1.5 text-xs font-semibold transition-colors hover:bg-[var(--color-muted)] cursor-pointer"
+        style={{ color }}
+      >
+        {action.label}
+      </button>
+    </div>
+  );
+}
+
+function IconBtn({
+  children,
+  label,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="grid h-7 w-7 place-items-center rounded border border-[var(--color-border)] bg-[var(--color-card)] text-xs transition-colors hover:bg-[var(--color-muted)] disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+    >
+      {children}
+    </button>
+  );
+}
+
+function ModelPicker({
+  title,
+  hint,
+  options,
+  value,
+  onChange,
+  id,
+}: {
+  title: string;
+  hint: string;
+  options: ModelOption[];
+  value: string;
+  onChange: (id: string) => void;
+  id: string;
+}) {
+  const selected = options.find((o) => o.id === value);
+  return (
+    <div>
+      <Label htmlFor={id}>{title}</Label>
+      <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label} — {o.vendor}
+          </option>
+        ))}
+      </Select>
+      <FieldHint>{selected ? `${selected.blurb}. ${hint}` : hint}</FieldHint>
     </div>
   );
 }

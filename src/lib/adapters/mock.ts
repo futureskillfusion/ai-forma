@@ -27,26 +27,29 @@ const PALETTE = [
 ];
 
 /** Offline SVG placeholder — no external image host, CSP-safe. */
-function placeholderImage(seed: string, label: string, variant: number): string {
-  const [fg, bg] = PALETTE[hash(seed + variant) % PALETTE.length];
-  const clean = label.replace(/[<>&]/g, "").slice(0, 40);
+function placeholderImage(seed: string, label: string, model: string, variant: number): string {
+  const [fg, bg] = PALETTE[hash(seed + model + variant) % PALETTE.length];
+  const clean = label.replace(/[<>&]/g, "").slice(0, 38);
+  const modelClean = model.replace(/[<>&]/g, "").slice(0, 24);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640">
   <rect width="640" height="640" fill="${bg}"/>
-  <circle cx="320" cy="300" r="${120 + variant * 24}" fill="${fg}" opacity="0.9"/>
-  <rect x="140" y="${180 + variant * 10}" width="360" height="${240 - variant * 8}" rx="28" fill="${fg}" opacity="0.35"/>
-  <text x="320" y="566" font-family="Plus Jakarta Sans, sans-serif" font-size="26" font-weight="700" fill="${fg}" text-anchor="middle">Concept ${variant + 1}</text>
-  <text x="320" y="600" font-family="Plus Jakarta Sans, sans-serif" font-size="15" fill="${fg}" opacity="0.7" text-anchor="middle">${clean}</text>
+  <circle cx="320" cy="296" r="${120 + variant * 24}" fill="${fg}" opacity="0.9"/>
+  <rect x="140" y="${176 + variant * 10}" width="360" height="${240 - variant * 8}" rx="28" fill="${fg}" opacity="0.35"/>
+  <text x="320" y="556" font-family="Plus Jakarta Sans, sans-serif" font-size="26" font-weight="700" fill="${fg}" text-anchor="middle">Concept ${variant + 1}</text>
+  <text x="320" y="588" font-family="Plus Jakarta Sans, sans-serif" font-size="14" fill="${fg}" opacity="0.7" text-anchor="middle">${clean}</text>
+  <text x="320" y="612" font-family="Plus Jakarta Sans, sans-serif" font-size="12" fill="${fg}" opacity="0.55" text-anchor="middle">${modelClean}</text>
 </svg>`;
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
 export const mockImageGen: ImageGenAdapter = {
-  async generate({ prompt, count, seed }) {
+  async generate({ prompt, count, seed, model }) {
+    const chosen = model ?? "flux-pro";
     const base = seed ?? prompt;
     const label = prompt.split(",")[0] ?? prompt;
     const images = Array.from({ length: count }, (_, i) => ({
-      url: placeholderImage(base, label, i),
-      prompt: `${prompt} — rendering pass ${i + 1}`,
+      url: placeholderImage(base, label, chosen, i),
+      prompt: `[${chosen}] ${prompt} — rendering pass ${i + 1}`,
     }));
     return { images, units: count };
   },
@@ -65,30 +68,32 @@ export const mockTranscription: TranscriptionAdapter = {
 };
 
 export const mockLlm: LlmAdapter = {
-  async feasibilityCheck({ description, dimensions }) {
-    const risky = /thin|0\.?\d?mm|hollow|overhang|bridge|tall and narrow/i.test(
-      `${description} ${dimensions ?? ""}`,
-    );
+  async feasibilityCheck({ description }) {
+    const risky = /thin|0\.?\d?mm|hollow|overhang|bridge|tall and narrow/i.test(description);
     return {
       flagged: risky,
       notes: risky
-        ? "Design has thin unsupported walls or steep overhangs that may need supports or a wall-thickness increase before printing."
+        ? "Design may have thin unsupported walls or steep overhangs that need supports or a wall-thickness increase before printing."
         : null,
       tokens: 420,
     };
   },
 
-  async compileHandoff({ description, dimensions, material, useCase, rounds, finalMatchPct }) {
+  async compileHandoff({ description, contact, rounds, ranking, finalMatchPct }) {
     const iterations = rounds.length;
     const changes = rounds
       .map((r) => (r.changeRequest ? `• Round ${r.round}: ${r.changeRequest}` : null))
       .filter(Boolean)
       .join("\n");
+    const contactLine = contact
+      ? [contact.name, contact.email, contact.phone].filter(Boolean).join(" · ")
+      : "";
     const summaryText = [
       `Customer wants: ${description}`,
-      dimensions ? `Target dimensions: ${dimensions}` : null,
-      material ? `Material preference: ${material}` : null,
-      useCase ? `Use case: ${useCase}` : null,
+      contactLine ? `Contact: ${contactLine}` : null,
+      ranking && ranking.length > 1
+        ? `Customer's concept ranking: #1 chosen, ${ranking.length} concepts ordered by preference.`
+        : null,
       "",
       `The concept was refined over ${iterations} generation round${iterations === 1 ? "" : "s"}, ` +
         `ending at a ${finalMatchPct}% self-reported match. Key change requests along the way:`,
@@ -96,7 +101,7 @@ export const mockLlm: LlmAdapter = {
       "",
       finalMatchPct >= 85
         ? "The brief is tight — a short confirmation session should be enough to move to modelling."
-        : "Some ambiguity remains — allow time to clarify proportions and mounting details with the customer.",
+        : "Some ambiguity remains — allow time to confirm proportions and details with the customer.",
     ]
       .filter((l) => l !== null)
       .join("\n");

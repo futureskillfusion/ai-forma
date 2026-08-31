@@ -4,13 +4,13 @@ import { imageCost, llmCost, whisperCost } from "@/lib/pricing";
 import { slugify } from "@/lib/slug";
 
 describe("deriveConfidenceTier", () => {
-  it("gives a high tier for a strong, fully-specified brief", () => {
+  it("gives a high tier for a strong, detailed, contactable brief", () => {
     const { tier } = deriveConfidenceTier({
       finalMatchPct: 92,
-      hasDimensions: true,
-      hasMaterial: true,
-      hasUseCase: true,
+      descriptionLength: 240,
+      hasContact: true,
       roundCount: 2,
+      rankedConcepts: true,
     });
     expect(tier).toBe("high");
   });
@@ -18,10 +18,10 @@ describe("deriveConfidenceTier", () => {
   it("gives a discovery tier for a vague, low-match brief", () => {
     const { tier } = deriveConfidenceTier({
       finalMatchPct: 55,
-      hasDimensions: false,
-      hasMaterial: false,
-      hasUseCase: false,
+      descriptionLength: 30,
+      hasContact: false,
       roundCount: 5,
+      rankedConcepts: false,
     });
     expect(tier).toBe("discovery");
   });
@@ -29,10 +29,10 @@ describe("deriveConfidenceTier", () => {
   it("lands on standard in between", () => {
     const { tier } = deriveConfidenceTier({
       finalMatchPct: 80,
-      hasDimensions: true,
-      hasMaterial: false,
-      hasUseCase: false,
+      descriptionLength: 90,
+      hasContact: false,
       roundCount: 3,
+      rankedConcepts: false,
     });
     expect(tier).toBe("standard");
   });

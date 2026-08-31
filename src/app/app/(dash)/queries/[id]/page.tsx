@@ -7,6 +7,7 @@ import { ArrowLeft, TriangleAlert, CalendarClock } from "@/components/icons";
 import { db } from "@/lib/db";
 import { pageRequireTenantUser } from "@/lib/rbac";
 import { dateTime } from "@/lib/format";
+import { imageModelLabel, llmModelLabel } from "@/lib/models";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,19 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
   if (!query) notFound();
 
   const rounds = [...new Set(query.variations.map((v) => v.roundNumber))].sort((a, b) => a - b);
+
+  // Concept ranking → human labels ("Concept 2 (round 3)")
+  const rankingIds = Array.isArray(query.conceptRankingJson)
+    ? (query.conceptRankingJson as string[])
+    : [];
+  const rankingList = rankingIds
+    .map((id) => {
+      const v = query.variations.find((x) => x.id === id);
+      if (!v) return null;
+      const nth = query.variations.filter((x) => x.roundNumber === v.roundNumber).indexOf(v) + 1;
+      return `Concept ${nth} (round ${v.roundNumber})`;
+    })
+    .filter((x): x is string => x !== null);
 
   return (
     <>
@@ -126,12 +140,17 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
               <Field k="Description" v={query.descriptionText || "—"} />
-              <Field k="Dimensions" v={query.dimensions ?? "—"} />
-              <Field k="Material" v={query.materialPreference ?? "—"} />
-              <Field k="Use case" v={query.useCase ?? "—"} />
+              <Field k="Image model" v={imageModelLabel(query.imageModelChoice)} />
+              <Field k="Assistant model" v={llmModelLabel(query.llmChoice)} />
+              {rankingList.length > 0 && (
+                <Field k="Concept ranking" v={rankingList.map((r, i) => `#${i + 1} ${r}`).join("  ·  ")} />
+              )}
               <Field k="Match threshold" v={`${query.matchThreshold}%`} />
+              {query.dimensions && <Field k="Dimensions (legacy)" v={query.dimensions} />}
+              {query.materialPreference && <Field k="Material (legacy)" v={query.materialPreference} />}
               <hr className="border-[var(--color-border)]" />
               <Field k="Consent" v={query.consentConfirmed ? `Confirmed ${dateTime(query.consentConfirmedAt!)}` : "Not confirmed"} />
+              <Field k="Customer name" v={query.customerName ?? "—"} />
               <Field k="Customer email" v={query.customerEmail ?? "—"} />
               <Field k="Customer phone" v={query.customerPhone ?? "—"} />
             </CardContent>

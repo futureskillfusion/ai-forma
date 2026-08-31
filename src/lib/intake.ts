@@ -57,30 +57,30 @@ export async function generateRound(query: Query) {
     prompt,
     count: 3,
     tier: limit.imageModelTier,
+    model: query.imageModelChoice,
     seed: `${query.id}:${nextRound}`,
   });
   await logUsage({
     tenantId: query.tenantId,
     queryId: query.id,
     vendor: "image_gen",
-    costUsd: imageCost(limit.imageModelTier, units),
+    costUsd: imageCost(limit.imageModelTier, units, query.imageModelChoice),
     tokensOrUnits: units,
-    meta: { round: nextRound, tier: limit.imageModelTier },
+    meta: { round: nextRound, tier: limit.imageModelTier, model: query.imageModelChoice },
   });
 
   // Feasibility check (LLM) — advisory note attached to each variation.
   const feas = await llm.feasibilityCheck({
     description: query.descriptionText,
-    dimensions: query.dimensions,
-    material: query.materialPreference,
+    model: query.llmChoice,
   });
   await logUsage({
     tenantId: query.tenantId,
     queryId: query.id,
     vendor: "llm",
-    costUsd: llmCost(feas.tokens),
+    costUsd: llmCost(feas.tokens, query.llmChoice),
     tokensOrUnits: feas.tokens,
-    meta: { purpose: "feasibility", round: nextRound },
+    meta: { purpose: "feasibility", round: nextRound, model: query.llmChoice },
   });
 
   const created = await db.$transaction(
@@ -104,8 +104,6 @@ export async function generateRound(query: Query) {
 
 function buildPrompt(query: Query, round: number): string {
   const parts = [query.descriptionText.trim()];
-  if (query.dimensions) parts.push(`approx ${query.dimensions}`);
-  if (query.materialPreference) parts.push(`material: ${query.materialPreference}`);
   if (round > 1) parts.push("(refined from customer feedback)");
   return parts.join(", ");
 }
@@ -130,29 +128,33 @@ export async function compileHandoff(query: Query, finalVariationId: string) {
   }));
   const finalMatchPct = variation.rating?.overallMatchPct ?? rounds.at(-1)?.overallMatchPct ?? 70;
 
+  const ranking = Array.isArray(query.conceptRankingJson)
+    ? (query.conceptRankingJson as string[])
+    : [];
+
   const summary = await llm.compileHandoff({
     description: query.descriptionText,
-    dimensions: query.dimensions,
-    material: query.materialPreference,
-    useCase: query.useCase,
+    model: query.llmChoice,
+    contact: { name: query.customerName, email: query.customerEmail, phone: query.customerPhone },
     rounds,
+    ranking,
     finalMatchPct,
   });
   await logUsage({
     tenantId: query.tenantId,
     queryId: query.id,
     vendor: "llm",
-    costUsd: llmCost(summary.tokens),
+    costUsd: llmCost(summary.tokens, query.llmChoice),
     tokensOrUnits: summary.tokens,
-    meta: { purpose: "handoff_summary" },
+    meta: { purpose: "handoff_summary", model: query.llmChoice },
   });
 
   const { tier } = deriveConfidenceTier({
     finalMatchPct,
-    hasDimensions: !!query.dimensions,
-    hasMaterial: !!query.materialPreference,
-    hasUseCase: !!query.useCase,
+    descriptionLength: query.descriptionText.trim().length,
+    hasContact: !!(query.customerEmail || query.customerPhone),
     roundCount: new Set(ratings.map((r) => r.variation.roundNumber)).size || 1,
+    rankedConcepts: ranking.length > 1,
   });
 
   // Round-robin-ish assignment: pick the designer with the fewest open packets.
@@ -162,35 +164,34 @@ export async function compileHandoff(query: Query, finalVariationId: string) {
   });
   const assignee = designers.sort((a, b) => a._count.assignedPackets - b._count.assignedPackets)[0];
 
+  const history = {
+    description: query.descriptionText,
+    contact: {
+      name: query.customerName,
+      email: query.customerEmail,
+      phone: query.customerPhone,
+    },
+    llmChoice: query.llmChoice,
+    imageModelChoice: query.imageModelChoice,
+    conceptRanking: ranking,
+    confidenceTier: tier,
+    finalMatchPct,
+    rounds,
+  };
+
   const packet = await db.handoffPacket.upsert({
     where: { queryId: query.id },
     create: {
       queryId: query.id,
       finalVariationId: variation.id,
       summaryText: summary.summaryText,
-      requirementHistoryJson: {
-        description: query.descriptionText,
-        dimensions: query.dimensions,
-        material: query.materialPreference,
-        useCase: query.useCase,
-        confidenceTier: tier,
-        finalMatchPct,
-        rounds,
-      },
+      requirementHistoryJson: history,
       assignedDesignerId: assignee?.id ?? null,
     },
     update: {
       finalVariationId: variation.id,
       summaryText: summary.summaryText,
-      requirementHistoryJson: {
-        description: query.descriptionText,
-        dimensions: query.dimensions,
-        material: query.materialPreference,
-        useCase: query.useCase,
-        confidenceTier: tier,
-        finalMatchPct,
-        rounds,
-      },
+      requirementHistoryJson: history,
       assignedDesignerId: assignee?.id ?? null,
     },
   });
