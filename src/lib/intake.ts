@@ -1,0 +1,242 @@
+import "server-only";
+import type { Query } from "@prisma/client";
+import { db } from "./db";
+import { HttpError } from "./rbac";
+import { verifyCustomerToken } from "./auth";
+import { imageGen, llm, booking } from "./adapters";
+import { assertAiEnabled } from "./platform";
+import { resolvePlanLimit } from "./plan";
+import { logUsage } from "./usage";
+import { imageCost, llmCost } from "./pricing";
+import { deriveConfidenceTier } from "./confidence";
+import { tenantAcceptsIntake } from "./tenant-context";
+
+/** Load the query a customer bearer token is bound to, or throw. */
+export async function requireCustomerQuery(req: Request): Promise<Query> {
+  const header = req.headers.get("authorization") ?? "";
+  const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7) : "";
+  const claims = token ? await verifyCustomerToken(token) : null;
+  if (!claims) throw new HttpError(401, "Missing or invalid customer session token");
+
+  const query = await db.query.findUnique({ where: { id: claims.queryId } });
+  // Defence in depth: token is signed, but still confirm the row's tenant matches.
+  if (!query || query.tenantId !== claims.tenantId) {
+    throw new HttpError(404, "Query not found");
+  }
+  return query;
+}
+
+/** Run one generation round for a query. Enforces kill switch + regen cap. */
+export async function generateRound(query: Query) {
+  await assertAiEnabled().catch(() => {
+    throw new HttpError(503, "Image generation is temporarily disabled. Please try again later.");
+  });
+
+  const tenant = await db.tenant.findUniqueOrThrow({ where: { id: query.tenantId } });
+  if (!tenantAcceptsIntake(tenant)) {
+    throw new HttpError(403, "This intake form is not currently active.");
+  }
+
+  const limit = await resolvePlanLimit(tenant);
+  const priorRounds = await db.variation.findMany({
+    where: { queryId: query.id },
+    distinct: ["roundNumber"],
+    select: { roundNumber: true },
+  });
+  const nextRound = priorRounds.length + 1;
+  if (nextRound > limit.maxRegenerationRounds) {
+    // Loop exhausted without a confirmed match — escalate to a human.
+    await db.query.update({ where: { id: query.id }, data: { status: "escalated" } });
+    throw new HttpError(409, "MAX_ROUNDS_REACHED");
+  }
+
+  await db.query.update({ where: { id: query.id }, data: { status: "generating" } });
+
+  const prompt = buildPrompt(query, nextRound);
+  const { images, units } = await imageGen.generate({
+    prompt,
+    count: 3,
+    tier: limit.imageModelTier,
+    seed: `${query.id}:${nextRound}`,
+  });
+  await logUsage({
+    tenantId: query.tenantId,
+    queryId: query.id,
+    vendor: "image_gen",
+    costUsd: imageCost(limit.imageModelTier, units),
+    tokensOrUnits: units,
+    meta: { round: nextRound, tier: limit.imageModelTier },
+  });
+
+  // Feasibility check (LLM) — advisory note attached to each variation.
+  const feas = await llm.feasibilityCheck({
+    description: query.descriptionText,
+    dimensions: query.dimensions,
+    material: query.materialPreference,
+  });
+  await logUsage({
+    tenantId: query.tenantId,
+    queryId: query.id,
+    vendor: "llm",
+    costUsd: llmCost(feas.tokens),
+    tokensOrUnits: feas.tokens,
+    meta: { purpose: "feasibility", round: nextRound },
+  });
+
+  const created = await db.$transaction(
+    images.map((img) =>
+      db.variation.create({
+        data: {
+          queryId: query.id,
+          roundNumber: nextRound,
+          imageUrl: img.url,
+          generationPrompt: img.prompt,
+          feasibilityFlag: feas.flagged,
+          feasibilityNotes: feas.notes,
+        },
+      }),
+    ),
+  );
+
+  await db.query.update({ where: { id: query.id }, data: { status: "rating" } });
+  return { round: nextRound, variations: created, maxRounds: limit.maxRegenerationRounds };
+}
+
+function buildPrompt(query: Query, round: number): string {
+  const parts = [query.descriptionText.trim()];
+  if (query.dimensions) parts.push(`approx ${query.dimensions}`);
+  if (query.materialPreference) parts.push(`material: ${query.materialPreference}`);
+  if (round > 1) parts.push("(refined from customer feedback)");
+  return parts.join(", ");
+}
+
+/** Compile the handoff packet once the customer confirms "close enough". */
+export async function compileHandoff(query: Query, finalVariationId: string) {
+  const variation = await db.variation.findFirst({
+    where: { id: finalVariationId, queryId: query.id },
+    include: { rating: true },
+  });
+  if (!variation) throw new HttpError(400, "Selected variation does not belong to this query");
+
+  const ratings = await db.rating.findMany({
+    where: { variation: { queryId: query.id } },
+    include: { variation: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const rounds = ratings.map((r) => ({
+    round: r.variation.roundNumber,
+    overallMatchPct: r.overallMatchPct,
+    changeRequest: r.changeRequestText,
+  }));
+  const finalMatchPct = variation.rating?.overallMatchPct ?? rounds.at(-1)?.overallMatchPct ?? 70;
+
+  const summary = await llm.compileHandoff({
+    description: query.descriptionText,
+    dimensions: query.dimensions,
+    material: query.materialPreference,
+    useCase: query.useCase,
+    rounds,
+    finalMatchPct,
+  });
+  await logUsage({
+    tenantId: query.tenantId,
+    queryId: query.id,
+    vendor: "llm",
+    costUsd: llmCost(summary.tokens),
+    tokensOrUnits: summary.tokens,
+    meta: { purpose: "handoff_summary" },
+  });
+
+  const { tier } = deriveConfidenceTier({
+    finalMatchPct,
+    hasDimensions: !!query.dimensions,
+    hasMaterial: !!query.materialPreference,
+    hasUseCase: !!query.useCase,
+    roundCount: new Set(ratings.map((r) => r.variation.roundNumber)).size || 1,
+  });
+
+  // Round-robin-ish assignment: pick the designer with the fewest open packets.
+  const designers = await db.tenantUser.findMany({
+    where: { tenantId: query.tenantId, role: "designer" },
+    include: { _count: { select: { assignedPackets: true } } },
+  });
+  const assignee = designers.sort((a, b) => a._count.assignedPackets - b._count.assignedPackets)[0];
+
+  const packet = await db.handoffPacket.upsert({
+    where: { queryId: query.id },
+    create: {
+      queryId: query.id,
+      finalVariationId: variation.id,
+      summaryText: summary.summaryText,
+      requirementHistoryJson: {
+        description: query.descriptionText,
+        dimensions: query.dimensions,
+        material: query.materialPreference,
+        useCase: query.useCase,
+        confidenceTier: tier,
+        finalMatchPct,
+        rounds,
+      },
+      assignedDesignerId: assignee?.id ?? null,
+    },
+    update: {
+      finalVariationId: variation.id,
+      summaryText: summary.summaryText,
+      requirementHistoryJson: {
+        description: query.descriptionText,
+        dimensions: query.dimensions,
+        material: query.materialPreference,
+        useCase: query.useCase,
+        confidenceTier: tier,
+        finalMatchPct,
+        rounds,
+      },
+      assignedDesignerId: assignee?.id ?? null,
+    },
+  });
+
+  await db.query.update({ where: { id: query.id }, data: { status: "handed_off" } });
+  return { packet, confidenceTier: tier };
+}
+
+export async function bookForPacket(packetId: string, tenantId: string, slotStart: string) {
+  const packet = await db.handoffPacket.findFirst({
+    where: { id: packetId, query: { tenantId } },
+    include: { query: true },
+  });
+  if (!packet) throw new HttpError(404, "Handoff packet not found");
+  if (!packet.assignedDesignerId) throw new HttpError(409, "No designer is available to assign");
+
+  const history = packet.requirementHistoryJson as { confidenceTier?: "high" | "standard" | "discovery" };
+  const confidenceTier = history.confidenceTier ?? "standard";
+  const { slots, durationMinutes } = await booking.getSlots({
+    designerId: packet.assignedDesignerId,
+    confidenceTier,
+  });
+  const chosen = slots.find((s) => s.start === slotStart) ?? slots[0];
+  const { externalCalendarEventId } = await booking.book({
+    designerId: packet.assignedDesignerId,
+    start: chosen.start,
+    durationMinutes: chosen.durationMinutes,
+  });
+
+  const appointment = await db.appointment.upsert({
+    where: { handoffPacketId: packet.id },
+    create: {
+      handoffPacketId: packet.id,
+      designerId: packet.assignedDesignerId,
+      scheduledAt: new Date(chosen.start),
+      durationMinutes: chosen.durationMinutes ?? durationMinutes,
+      externalCalendarEventId,
+      confidenceTier,
+    },
+    update: {
+      scheduledAt: new Date(chosen.start),
+      durationMinutes: chosen.durationMinutes ?? durationMinutes,
+      externalCalendarEventId,
+    },
+  });
+
+  await db.query.update({ where: { id: packet.queryId }, data: { status: "booked" } });
+  return appointment;
+}

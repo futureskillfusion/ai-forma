@@ -1,0 +1,392 @@
+// Forma Intake — data model
+// Multi-tenant SaaS. Every tenant-scoped row carries `tenantId`. Queries are
+// always filtered by the tenantId derived from the authenticated session or
+// the embed key — never from a raw client parameter.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PlanTier {
+  starter
+  pro
+  enterprise
+}
+
+enum TenantStatus {
+  active
+  over_cap
+  past_due
+  suspended
+}
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  canceled
+}
+
+enum UserRole {
+  tenant_admin
+  designer
+}
+
+enum QueryStatus {
+  describing
+  generating
+  rating
+  handed_off
+  booked
+  escalated
+}
+
+enum ShapeScore {
+  off
+  good
+  close
+}
+
+enum SizeScore {
+  too_big
+  good
+  too_small
+}
+
+enum MaterialScore {
+  off
+  good
+  close
+}
+
+enum ConfidenceTier {
+  high
+  standard
+  discovery
+}
+
+enum UsageVendor {
+  whisper
+  image_gen
+  llm
+  sms
+  email
+}
+
+enum ImageModelTier {
+  standard
+  premium
+}
+
+enum OveragePolicy {
+  hard_cutoff
+  auto_upgrade_prompt
+  metered_billing
+}
+
+enum JobType {
+  transcription
+  image_generation
+  handoff_compilation
+}
+
+enum JobStatus {
+  queued
+  running
+  succeeded
+  failed
+}
+
+enum NdaStatus {
+  requested
+  sent
+  signed
+  declined
+}
+
+enum AuditAction {
+  tenant_created
+  tenant_suspended
+  tenant_reactivated
+  plan_limits_updated
+  kill_switch_toggled
+  subscription_status_changed
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Platform-level (super admin)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Single-row table holding platform-wide switches.
+model PlatformConfig {
+  id                String   @id @default("singleton")
+  killSwitchEnabled Boolean  @default(false) // when true, blocks ALL image-gen + transcription calls
+  updatedAt         DateTime @updatedAt
+  updatedBy         String?
+}
+
+model SuperAdmin {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  auditLogs AuditLog[]
+}
+
+model AuditLog {
+  id           String      @id @default(uuid())
+  actorId      String
+  actor        SuperAdmin  @relation(fields: [actorId], references: [id])
+  action       AuditAction
+  targetTenant String?
+  reason       String?
+  metadata     Json?
+  createdAt    DateTime    @default(now())
+
+  @@index([targetTenant])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tenant + users
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Tenant {
+  id             String       @id @default(uuid())
+  name           String
+  slug           String       @unique
+  planTier       PlanTier     @default(starter)
+  retainerAmount Decimal      @db.Decimal(10, 2)
+  status         TenantStatus @default(active)
+
+  // Embed: the client pastes a <script>/iframe using this key on their own site.
+  embedKey       String  @unique
+  embedAllowedOrigins String[] @default([]) // e.g. ["https://3d-2u.com"]
+
+  // Branding / white-label (within super-admin-allowed limits)
+  logoUrl      String?
+  primaryColor String  @default("#2563EB")
+  subdomain    String? @unique
+
+  // Subscription mirror (source of truth is the billing provider)
+  subscriptionStatus SubscriptionStatus @default(trialing)
+  currentPeriodEnd   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users         TenantUser[]
+  queries       Query[]
+  usageLogs     UsageLog[]
+  planLimit     PlanLimit?
+  ndaRequests   NdaRequest[]
+
+  @@index([status])
+}
+
+model TenantUser {
+  id           String   @id @default(uuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  role         UserRole
+  name         String
+  email        String
+  passwordHash String
+  // External calendar connection (Calendly / Cal.com) — one per designer.
+  calendarConnectionId String?
+  availabilityJson     Json?
+  createdAt    DateTime @default(now())
+
+  assignedPackets HandoffPacket[]
+  appointments    Appointment[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan limits (super-admin configurable; per tenant or defaulted per tier)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PlanLimit {
+  id                   String         @id @default(uuid())
+  // Null tenantId => this row is the default for `planTier`.
+  tenantId             String?        @unique
+  tenant               Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planTier             PlanTier
+  maxQueriesPerMonth   Int
+  maxRegenerationRounds Int
+  imageModelTier       ImageModelTier @default(standard)
+  designerSeats        Int
+  overagePolicy        OveragePolicy  @default(hard_cutoff)
+  // Cost ceiling used to flag `over_cap`; compared to summed UsageLog cost per month.
+  monthlyCostCapUsd    Decimal        @db.Decimal(10, 2)
+
+  @@index([planTier])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Customer intake
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Query {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Consent gate — no input is accepted until this is true.
+  consentConfirmed   Boolean   @default(false)
+  consentConfirmedAt DateTime?
+
+  // Optional customer contact (for notifications). Never required to start.
+  customerName  String?
+  customerEmail String?
+  customerPhone String?
+
+  descriptionText     String  @default("")
+  descriptionAudioUrl String?
+  dimensions          String?
+  materialPreference  String?
+  useCase             String?
+
+  status      QueryStatus @default(describing)
+  matchThreshold Int      @default(80) // % — configurable per query, seeded from plan
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  variations    Variation[]
+  handoffPacket HandoffPacket?
+  usageLogs     UsageLog[]
+  jobs          Job[]
+  ndaRequest    NdaRequest?
+
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+}
+
+model Variation {
+  id             String   @id @default(uuid())
+  queryId        String
+  query          Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  roundNumber    Int
+  imageUrl       String
+  generationPrompt String
+  // Feasibility check (LLM). Advisory — flagged designs still proceed but the
+  // note travels into the handoff packet for the human designer.
+  feasibilityFlag  Boolean @default(false)
+  feasibilityNotes String?
+  createdAt      DateTime @default(now())
+
+  rating           Rating?
+  finalForPacket   HandoffPacket? @relation("FinalVariation")
+
+  @@index([queryId, roundNumber])
+}
+
+model Rating {
+  id             String        @id @default(uuid())
+  variationId    String        @unique
+  variation      Variation     @relation(fields: [variationId], references: [id], onDelete: Cascade)
+  overallMatchPct Int
+  shapeScore     ShapeScore
+  sizeScore      SizeScore
+  materialScore  MaterialScore
+  annotationData Json? // { markups: [{ x, y, note }] }
+  changeRequestText String?
+  createdAt      DateTime      @default(now())
+}
+
+model HandoffPacket {
+  id              String   @id @default(uuid())
+  queryId         String   @unique
+  query           Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  finalVariationId String  @unique
+  finalVariation  Variation @relation("FinalVariation", fields: [finalVariationId], references: [id])
+  summaryText     String   // AI-generated natural-language brief for the designer
+  requirementHistoryJson Json // full spec + every round's rating snapshot
+  compiledAt      DateTime @default(now())
+
+  assignedDesignerId String?
+  assignedDesigner   TenantUser? @relation(fields: [assignedDesignerId], references: [id])
+
+  appointment Appointment?
+}
+
+model Appointment {
+  id              String   @id @default(uuid())
+  handoffPacketId String   @unique
+  handoffPacket   HandoffPacket @relation(fields: [handoffPacketId], references: [id], onDelete: Cascade)
+  designerId      String
+  designer        TenantUser @relation(fields: [designerId], references: [id])
+  scheduledAt     DateTime
+  durationMinutes Int
+  externalCalendarEventId String?
+  confidenceTier  ConfidenceTier
+  createdAt       DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Async jobs (image gen / transcription / handoff compilation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Job {
+  id        String    @id @default(uuid())
+  queryId   String
+  query     Query     @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  type      JobType
+  status    JobStatus @default(queued)
+  resultJson Json?
+  error     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([queryId, type])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NDA escalation (from the consent step)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model NdaRequest {
+  id           String    @id @default(uuid())
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  queryId      String    @unique
+  query        Query     @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  status       NdaStatus @default(requested)
+  requesterEmail String?
+  note         String?
+  createdAt    DateTime  @default(now())
+
+  @@index([tenantId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Usage + cost (drives super admin margin dashboard)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UsageLog {
+  id            String      @id @default(uuid())
+  tenantId      String
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  queryId       String?
+  query         Query?      @relation(fields: [queryId], references: [id], onDelete: SetNull)
+  vendor        UsageVendor
+  costUsd       Decimal     @db.Decimal(10, 4)
+  tokensOrUnits Int         @default(0)
+  meta          Json?
+  createdAt     DateTime    @default(now())
+
+  @@index([tenantId, createdAt])
+}
