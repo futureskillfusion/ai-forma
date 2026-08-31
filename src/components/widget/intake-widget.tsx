@@ -364,27 +364,6 @@ export function IntakeWidget({
             />
           </Fieldset>
 
-          {/* Contact details */}
-          <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-            <p className="text-sm font-bold">Contact details</p>
-            <p className="mt-0.5 mb-3 text-xs text-[var(--color-muted-foreground)]">
-              Optional — so {brandName} can send your concepts and appointment details.
-            </p>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Fieldset label="Full name" htmlFor="cn">
-                <Input id="cn" value={form.customerName} onChange={set("customerName")} autoComplete="name" />
-              </Fieldset>
-              <Fieldset label="Email" htmlFor="ce">
-                <Input id="ce" type="email" value={form.customerEmail} onChange={set("customerEmail")} autoComplete="email" />
-              </Fieldset>
-            </div>
-            <div className="mt-4">
-              <Fieldset label="Phone" htmlFor="cp">
-                <Input id="cp" type="tel" value={form.customerPhone} onChange={set("customerPhone")} autoComplete="tel" />
-              </Fieldset>
-            </div>
-          </div>
-
           {/* Choose your LLM */}
           <ModelPicker
             id="llm-model"
@@ -404,6 +383,27 @@ export function IntakeWidget({
             value={imageModelChoice}
             onChange={setImageModelChoice}
           />
+
+          {/* Contact details — last */}
+          <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+            <p className="text-sm font-bold">Contact details</p>
+            <p className="mt-0.5 mb-3 text-xs text-[var(--color-muted-foreground)]">
+              Optional — so {brandName} can send your concepts and appointment details.
+            </p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Fieldset label="Full name" htmlFor="cn">
+                <Input id="cn" value={form.customerName} onChange={set("customerName")} autoComplete="name" />
+              </Fieldset>
+              <Fieldset label="Email" htmlFor="ce">
+                <Input id="ce" type="email" value={form.customerEmail} onChange={set("customerEmail")} autoComplete="email" />
+              </Fieldset>
+            </div>
+            <div className="mt-4">
+              <Fieldset label="Phone" htmlFor="cp">
+                <Input id="cp" type="tel" value={form.customerPhone} onChange={set("customerPhone")} autoComplete="tel" />
+              </Fieldset>
+            </div>
+          </div>
 
           {aiDisabled && (
             <p className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
