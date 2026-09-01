@@ -8,6 +8,7 @@ import {
   mockTranscription,
 } from "./mock";
 import { pollinationsImageGen } from "./image-pollinations";
+import { huggingfaceImageGen } from "./image-huggingface";
 import type {
   BillingAdapter,
   BookingAdapter,
@@ -33,9 +34,13 @@ const realStub = new Proxy(
 const useMock = env.USE_MOCK_ADAPTERS;
 
 // Image generation has its own switch so real images work while everything
-// else stays mocked. "pollinations" is free and needs no API key.
+// else stays mocked.
 export const imageGen: ImageGenAdapter =
-  env.IMAGE_PROVIDER === "pollinations" ? pollinationsImageGen : mockImageGen;
+  env.IMAGE_PROVIDER === "huggingface"
+    ? huggingfaceImageGen
+    : env.IMAGE_PROVIDER === "pollinations"
+      ? pollinationsImageGen
+      : mockImageGen;
 
 export const transcription: TranscriptionAdapter = useMock ? mockTranscription : realStub;
 export const llm: LlmAdapter = useMock ? mockLlm : realStub;

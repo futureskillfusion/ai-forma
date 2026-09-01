@@ -10,9 +10,12 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
-  // Image generation provider. "pollinations" = free, no key. "mock" = offline
-  // placeholder. Real paid providers can be added in src/lib/adapters/.
-  IMAGE_PROVIDER: z.enum(["pollinations", "mock"]).default("pollinations"),
+  // Image generation provider:
+  //  - "huggingface" = free with a token (reliable FLUX.1-schnell) — set HUGGINGFACE_API_TOKEN
+  //  - "pollinations" = free, no key (best-effort; often rate-limited)
+  //  - "mock" = offline placeholder
+  IMAGE_PROVIDER: z.enum(["huggingface", "pollinations", "mock"]).default("pollinations"),
+  HUGGINGFACE_API_TOKEN: z.string().optional().default(""),
   ANTHROPIC_API_KEY: z.string().optional().default(""),
   OPENAI_API_KEY: z.string().optional().default(""),
   STRIPE_SECRET_KEY: z.string().optional().default(""),

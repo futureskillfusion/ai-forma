@@ -55,7 +55,7 @@ export async function generateRound(query: Query) {
   const prompt = buildPrompt(query, nextRound);
   const { images, units } = await imageGen.generate({
     prompt,
-    count: 3,
+    count: 2,
     tier: limit.imageModelTier,
     model: query.imageModelChoice,
     seed: `${query.id}:${nextRound}`,
@@ -66,7 +66,10 @@ export async function generateRound(query: Query) {
     vendor: "image_gen",
     // The free provider (Pollinations) has no per-image cost; a paid provider
     // would use the model price sheet.
-    costUsd: IMAGE_PROVIDER === "pollinations" ? 0 : imageCost(limit.imageModelTier, units, query.imageModelChoice),
+    costUsd:
+      IMAGE_PROVIDER === "mock" || IMAGE_PROVIDER === "pollinations" || IMAGE_PROVIDER === "huggingface"
+        ? 0
+        : imageCost(limit.imageModelTier, units, query.imageModelChoice),
     tokensOrUnits: units,
     meta: { round: nextRound, tier: limit.imageModelTier, model: query.imageModelChoice, provider: IMAGE_PROVIDER },
   });

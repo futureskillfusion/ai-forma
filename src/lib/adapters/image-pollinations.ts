@@ -1,17 +1,14 @@
 import type { ImageGenAdapter } from "./types";
-import { mockImageGen } from "./mock";
 
 // Free, key-less image generation via Pollinations (https://pollinations.ai).
-// The customer's model pick maps to the closest free model; the label they chose
-// is preserved on the brief elsewhere. Swap this file for a paid provider later.
-const POLLINATIONS_MODEL: Record<string, string> = {
-  "flux-pro": "flux",
-  "dall-e-3": "flux",
-  "gpt-image-1": "flux",
-  "imagen-3": "flux-realism",
-  "midjourney-v6": "flux",
-  "sd-3-5-large": "turbo",
-};
+// Anonymous use is slow-ish (~10s) and bursty, so we DON'T fetch server-side
+// (that just blocks the request and times out). We return "turbo" (SDXL) URLs
+// and let the browser load them with retry-on-error (see the widget's
+// ConceptCard). One non-blocking warm-up nudges Pollinations to start rendering.
+// The customer's chosen model *label* is preserved on the brief; wire a paid
+// provider here to honour the actual model choice.
+const MODEL = "turbo";
+const REFERRER = "aiforma.app";
 
 function hash(s: string): number {
   let h = 2166136261;
@@ -22,47 +19,43 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-function buildUrl(prompt: string, model: string, seed: number): string {
+function buildUrl(prompt: string, seed: number): string {
   const p = encodeURIComponent(prompt.slice(0, 380));
   const params = new URLSearchParams({
-    width: "768",
-    height: "768",
+    width: "640",
+    height: "640",
     seed: String(seed),
-    model,
+    model: MODEL,
     nologo: "true",
+    nofeed: "true",
+    referrer: REFERRER,
   });
   return `https://image.pollinations.ai/prompt/${p}?${params.toString()}`;
 }
 
 export const pollinationsImageGen: ImageGenAdapter = {
   async generate(input) {
-    const model = POLLINATIONS_MODEL[input.model ?? ""] ?? "flux";
+    // Two concepts keeps the browser's rate-limited loads manageable.
+    const count = Math.min(input.count, 2);
     const seedBase = hash(input.seed ?? input.prompt);
 
-    const images = Array.from({ length: input.count }, (_, i) => {
+    const images = Array.from({ length: count }, (_, i) => {
       const seed = (seedBase + i * 7919) % 2_000_000;
       return {
-        url: buildUrl(input.prompt, model, seed),
-        prompt: `${input.prompt} — ${model} #${i + 1}`,
+        url: buildUrl(input.prompt, seed),
+        prompt: `${input.prompt} — concept ${i + 1}`,
       };
     });
 
-    // Quick liveness probe (HEAD, short timeout). If Pollinations is clearly
-    // unreachable, fall back to offline placeholders; otherwise return the URLs
-    // and let the browser stream the images in (the widget dims any that fail).
-    try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch("https://image.pollinations.ai/", {
-        method: "HEAD",
-        signal: controller.signal,
-      });
-      clearTimeout(t);
-      if (!res.ok && res.status >= 500) throw new Error(`pollinations ${res.status}`);
-    } catch {
-      return mockImageGen.generate(input);
-    }
+    // Non-blocking warm-up: kick Pollinations to start rendering, staggered so
+    // we don't trip its burst limit. Never awaited — the browser does the real
+    // load with retries.
+    images.forEach((img, i) => {
+      setTimeout(() => {
+        fetch(img.url).catch(() => undefined);
+      }, i * 2500);
+    });
 
-    return { images, units: input.count };
+    return { images, units: count };
   },
 };

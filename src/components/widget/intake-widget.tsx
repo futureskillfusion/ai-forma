@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Fieldset, Input, Textarea, Select, Label, FieldHint } from "@/components/ui/field";
 import {
@@ -680,7 +680,43 @@ function ConceptCard({
   color: string;
   action: { label: string; onClick: () => void };
 } & React.HTMLAttributes<HTMLDivElement>) {
+  // Pollinations renders each image on first request (~10s, sometimes rate-
+  // limited, sometimes the connection just hangs) and caches after. Retry the
+  // same URL several times — on load error AND on a stall timeout — before
+  // giving up. A cached URL loads in <1s on retry.
+  const MAX_RETRIES = 4;
+  const STALL_MS = 12000;
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [attempt, setAttempt] = useState(0);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const retry = useCallback(() => {
+    setAttempt((a) => {
+      if (a >= MAX_RETRIES) {
+        setState("error");
+        return a;
+      }
+      setState("loading");
+      retryTimer.current = setTimeout(() => {
+        if (imgRef.current) imgRef.current.src = variation.imageUrl;
+      }, 5000);
+      return a + 1;
+    });
+  }, [variation.imageUrl]);
+
+  // Stall watchdog: if the image hasn't loaded within STALL_MS of (re)start,
+  // force a retry rather than waiting on a hung connection.
+  useEffect(() => {
+    if (state !== "loading") return;
+    const t = setTimeout(retry, STALL_MS);
+    return () => clearTimeout(t);
+  }, [state, attempt, retry]);
+
+  useEffect(() => () => clearTimeout(retryTimer.current), []);
+
+  const handleError = retry;
+
   return (
     <div
       {...dnd}
@@ -690,6 +726,7 @@ function ConceptCard({
         <div className="relative aspect-square w-full bg-[var(--color-muted)]">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
+            ref={imgRef}
             src={variation.imageUrl}
             alt="Generated concept"
             className={cn(
@@ -697,19 +734,37 @@ function ConceptCard({
               state === "ready" ? "opacity-100" : "opacity-0",
             )}
             onLoad={() => setState("ready")}
-            onError={() => setState("error")}
+            onError={handleError}
           />
           {state === "loading" && (
-            <span
-              className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 animate-spin rounded-full border-2 border-[var(--color-border)]"
-              style={{ borderTopColor: color }}
-              aria-label="Generating concept"
-            />
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+              <span
+                className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--color-border)]"
+                style={{ borderTopColor: color }}
+                aria-label="Generating concept"
+              />
+              <span className="text-[10px] font-medium text-[var(--color-muted-foreground)]">
+                {attempt === 0 ? "Generating…" : "Still generating…"}
+              </span>
+            </div>
           )}
           {state === "error" && (
-            <span className="absolute inset-0 grid place-items-center px-2 text-center text-[10px] font-medium text-[var(--color-muted-foreground)]">
-              Concept still rendering — give it a moment
-            </span>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3 text-center">
+              <span className="text-[11px] font-medium text-[var(--color-muted-foreground)]">
+                This concept didn&apos;t render
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setAttempt(0);
+                  setState("loading");
+                  if (imgRef.current) imgRef.current.src = variation.imageUrl;
+                }}
+                className="rounded-md border border-[var(--color-input)] px-2 py-1 text-[11px] font-semibold hover:bg-[var(--color-muted)] cursor-pointer"
+              >
+                Try again
+              </button>
+            </div>
           )}
         </div>
         {variation.feasibilityFlag && (
