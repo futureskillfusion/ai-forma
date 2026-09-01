@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Fieldset, Input, Textarea, Select, Label, FieldHint } from "@/components/ui/field";
+import { Fieldset, Input, Textarea, Label, FieldHint } from "@/components/ui/field";
 import {
   ShieldCheck,
   Sparkles,
@@ -825,18 +825,47 @@ function ModelPicker({
   onChange: (id: string) => void;
   id: string;
 }) {
-  const selected = options.find((o) => o.id === value);
   return (
-    <div>
-      <Label htmlFor={id}>{title}</Label>
-      <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
-        {options.map((o) => (
-          <option key={o.id} value={o.id}>
-            {o.label} — {o.vendor}
-          </option>
-        ))}
-      </Select>
-      <FieldHint>{selected ? `${selected.blurb}. ${hint}` : hint}</FieldHint>
+    <div role="radiogroup" aria-labelledby={`${id}-label`}>
+      <Label id={`${id}-label`}>{title}</Label>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {options.map((o) => {
+          const active = o.id === value;
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(o.id)}
+              className={cn(
+                "flex flex-col rounded-lg border-2 px-3 py-2.5 text-left transition-colors cursor-pointer",
+                "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ring)]",
+                active
+                  ? "border-[var(--brand)] bg-[color-mix(in_srgb,var(--brand)_8%,transparent)]"
+                  : "border-[var(--color-border)] hover:border-[var(--color-input)]",
+              )}
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span className="text-sm font-bold">{o.label}</span>
+                <span
+                  className={cn(
+                    "grid h-4 w-4 shrink-0 place-items-center rounded-full border",
+                    active ? "border-[var(--brand)] bg-[var(--brand)] text-white" : "border-[var(--color-input)]",
+                  )}
+                >
+                  {active && <Check className="h-3 w-3" />}
+                </span>
+              </span>
+              <span className="text-[11px] text-[var(--color-muted-foreground)]">{o.vendor}</span>
+              <span className="mt-1 text-[11px] leading-snug text-[var(--color-muted-foreground)]">
+                {o.blurb}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <FieldHint>{hint}</FieldHint>
     </div>
   );
 }
