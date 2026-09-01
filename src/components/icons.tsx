@@ -21,4 +21,6 @@ export {
   Plus,
   ExternalLink,
   TriangleAlert,
+  Send,
+  X,
 } from "lucide-react";

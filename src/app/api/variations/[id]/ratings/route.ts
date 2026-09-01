@@ -7,9 +7,11 @@ import { resolvePlanLimit } from "@/lib/plan";
 
 const Body = z.object({
   overallMatchPct: z.number().int().min(0).max(100),
-  shapeScore: z.enum(["off", "good", "close"]),
-  sizeScore: z.enum(["too_big", "good", "too_small"]),
-  materialScore: z.enum(["off", "good", "close"]),
+  // Category scores are optional now — the widget only asks for an overall
+  // match % plus free-text feedback. Default so historic/DB shape is unchanged.
+  shapeScore: z.enum(["off", "good", "close"]).default("good"),
+  sizeScore: z.enum(["too_big", "good", "too_small"]).default("good"),
+  materialScore: z.enum(["off", "good", "close"]).default("good"),
   annotationData: z
     .object({
       markups: z.array(

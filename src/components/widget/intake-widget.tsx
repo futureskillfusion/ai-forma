@@ -10,6 +10,8 @@ import {
   Check,
   CalendarClock,
   ArrowRight,
+  Send,
+  X,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { dateTime } from "@/lib/format";
@@ -29,11 +31,13 @@ interface Slot {
   durationMinutes: number;
 }
 
-const SHAPE = ["off", "good", "close"] as const;
-const SIZE = ["too_big", "good", "too_small"] as const;
-const MATERIAL = ["off", "good", "close"] as const;
-const SIZE_LABEL: Record<string, string> = { too_big: "Too big", good: "Just right", too_small: "Too small" };
-const GEN_LABEL: Record<string, string> = { off: "Off", good: "Good", close: "Close" };
+// Chat transcript on the review step.
+type ChatMsg =
+  | { id: string; role: "assistant" | "user"; kind: "text"; text: string }
+  | { id: string; role: "assistant"; kind: "concepts"; round: number; variationIds: string[] };
+
+let msgSeq = 0;
+const nextMsgId = () => `m${++msgSeq}`;
 
 export function IntakeWidget({
   embedKey,
@@ -66,17 +70,15 @@ export function IntakeWidget({
   const [round, setRound] = useState(0);
   const [maxRounds, setMaxRounds] = useState(5);
 
-  // Drag-and-drop concept ranking for the current round.
-  const [ranking, setRanking] = useState<string[]>([]); // ordered variation ids, top pick first
+  // ── review step: chat + bucket ────────────────────────────────────────────
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [matchPct, setMatchPct] = useState(70);
+  const [assistantTyping, setAssistantTyping] = useState(false);
+  const [roundsExhausted, setRoundsExhausted] = useState(false);
+  const [bucketId, setBucketId] = useState<string | null>(null); // the concept the customer picked
   const [dragId, setDragId] = useState<string | null>(null);
-
-  const [rating, setRating] = useState({
-    overallMatchPct: 70,
-    shapeScore: "good" as (typeof SHAPE)[number],
-    sizeScore: "good" as (typeof SIZE)[number],
-    materialScore: "good" as (typeof MATERIAL)[number],
-    changeRequestText: "",
-  });
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const [packet, setPacket] = useState<{ id: string; summaryText: string; confidenceTier: string } | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
@@ -103,42 +105,22 @@ export function IntakeWidget({
     [token],
   );
 
-  const currentRoundVariations = useMemo(
+  const variationById = useCallback(
+    (id: string | null) => (id ? variations.find((v) => v.id === id) ?? null : null),
+    [variations],
+  );
+  const latestRoundVariations = useMemo(
     () => variations.filter((v) => v.roundNumber === round),
     [variations, round],
   );
-  const pool = useMemo(
-    () => currentRoundVariations.filter((v) => !ranking.includes(v.id)),
-    [currentRoundVariations, ranking],
-  );
-  const topPick = ranking[0] ?? null;
-  const byId = (id: string) => currentRoundVariations.find((v) => v.id === id);
+  const bucketVariation = variationById(bucketId);
 
-  // ── ranking helpers ───────────────────────────────────────────────────────
-  function addToRanking(id: string, atIndex?: number) {
-    setRanking((r) => {
-      const without = r.filter((x) => x !== id);
-      const idx = atIndex === undefined ? without.length : atIndex;
-      return [...without.slice(0, idx), id, ...without.slice(idx)];
-    });
-  }
-  function removeFromRanking(id: string) {
-    setRanking((r) => r.filter((x) => x !== id));
-  }
-  function move(id: string, dir: -1 | 1) {
-    setRanking((r) => {
-      const i = r.indexOf(id);
-      const j = i + dir;
-      if (i < 0 || j < 0 || j >= r.length) return r;
-      const copy = [...r];
-      [copy[i], copy[j]] = [copy[j], copy[i]];
-      return copy;
-    });
-  }
-  function onDrop(atIndex?: number) {
-    if (dragId) addToRanking(dragId, atIndex);
-    setDragId(null);
-  }
+  const pushMsg = useCallback((m: ChatMsg) => setMessages((prev) => [...prev, m]), []);
+
+  // Auto-scroll the transcript to the newest message.
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, assistantTyping]);
 
   async function startGeneration() {
     setError(null);
@@ -190,76 +172,104 @@ export function IntakeWidget({
         return;
       }
       if (!res.ok) throw new Error(data.error ?? "Generation failed");
+      const newVariations: Variation[] = data.variations;
       setRound(data.round);
       setMaxRounds(data.maxRounds);
-      setVariations((prev) => [...prev, ...data.variations]);
-      setRanking([]); // fresh ranking each round
-      setRating((r) => ({ ...r, changeRequestText: "" }));
+      setVariations((prev) => [...prev, ...newVariations]);
+
+      if (data.round === 1) {
+        pushMsg({
+          id: nextMsgId(),
+          role: "assistant",
+          kind: "text",
+          text: `Here are the first concepts for “${form.descriptionText.trim().slice(0, 120)}”. Tell me what to change and I'll try again — or add the one you like to your pick on the right.`,
+        });
+      } else {
+        pushMsg({
+          id: nextMsgId(),
+          role: "assistant",
+          kind: "text",
+          text: `Updated concepts — round ${data.round} of ${data.maxRounds}.`,
+        });
+      }
+      pushMsg({
+        id: nextMsgId(),
+        role: "assistant",
+        kind: "concepts",
+        round: data.round,
+        variationIds: newVariations.map((v) => v.id),
+      });
       setStep("review");
     } catch (e) {
       setError((e as Error).message);
       setStep(variations.length ? "review" : "describe");
     } finally {
       setBusy(false);
+      setAssistantTyping(false);
     }
   }
 
-  async function submitRating(): Promise<{ canIterate: boolean; meetsThreshold: boolean } | null> {
-    const pick = topPick ?? currentRoundVariations[0]?.id ?? null;
-    if (!pick) {
-      setError("Rank at least your top concept first.");
-      return null;
-    }
-    const orderedRanking = ranking.length ? ranking : [pick];
-    const data = await api(`/api/variations/${pick}/ratings`, {
+  /** Record the customer's feedback on a concept (rating + free text). */
+  async function recordFeedback(variationId: string, feedback: string) {
+    await api(`/api/variations/${variationId}/ratings`, {
       method: "POST",
       authed: true,
       body: JSON.stringify({
-        overallMatchPct: rating.overallMatchPct,
-        shapeScore: rating.shapeScore,
-        sizeScore: rating.sizeScore,
-        materialScore: rating.materialScore,
-        changeRequestText: rating.changeRequestText || undefined,
-        ranking: orderedRanking,
+        overallMatchPct: matchPct,
+        changeRequestText: feedback || undefined,
+        ranking: bucketId ? [bucketId] : [variationId],
       }),
     });
-    return { canIterate: data.guidance.canIterate, meetsThreshold: data.guidance.meetsThreshold };
   }
 
-  async function refine() {
+  /** Chat composer submit — send feedback, get a fresh round of concepts. */
+  async function sendChat() {
+    const text = input.trim();
+    if (!text || busy || roundsExhausted) return;
     setError(null);
-    if (!rating.changeRequestText.trim()) {
-      setError("Tell us what to change, then we'll regenerate.");
+    setInput("");
+    pushMsg({ id: nextMsgId(), role: "user", kind: "text", text });
+
+    const target = bucketId ?? latestRoundVariations[0]?.id ?? null;
+
+    if (round >= maxRounds) {
+      setRoundsExhausted(true);
+      pushMsg({
+        id: nextMsgId(),
+        role: "assistant",
+        kind: "text",
+        text: `That's the last refinement I can run. I've saved everything — add your favourite concept to your pick and I'll send it, with the full conversation, to a ${brandName} designer.`,
+      });
+      if (target) await recordFeedback(target, text).catch(() => undefined);
       return;
     }
+
     setBusy(true);
+    setAssistantTyping(true);
     try {
-      const g = await submitRating();
-      if (!g) return;
-      if (!g.canIterate) {
-        setStep("escalated");
-        return;
-      }
+      if (target) await recordFeedback(target, text);
       await runGenerate();
     } catch (e) {
       setError((e as Error).message);
+      setAssistantTyping(false);
     } finally {
       setBusy(false);
     }
   }
 
-  async function proceed() {
-    setError(null);
-    const pick = topPick ?? currentRoundVariations[0]?.id ?? null;
+  /** Continue to the handoff step with the concept in the bucket. */
+  async function proceedWithBucket() {
+    const pick = bucketId ?? latestRoundVariations[0]?.id ?? null;
     if (!pick) {
-      setError("Rank at least your top concept first.");
+      setError("Add a concept to your pick first.");
       return;
     }
+    setError(null);
     setBusy(true);
     setStep("loading");
-    setLoadingLabel("Compiling your handoff packet…");
+    setLoadingLabel("Compiling your brief…");
     try {
-      await submitRating();
+      await recordFeedback(pick, "");
       const data = await api(`/api/queries/${queryId}/handoff`, {
         method: "POST",
         authed: true,
@@ -414,182 +424,170 @@ export function IntakeWidget({
       )}
 
       {step === "review" && (
-        <section className="space-y-5">
-          <div className="flex items-center justify-between">
-            <h1 className="text-xl font-extrabold tracking-tight">Round {round} of up to {maxRounds}</h1>
-            <span className="text-xs font-semibold text-[var(--color-muted-foreground)]">Drag to rank</span>
-          </div>
+        <section className="flex flex-col gap-4 lg:flex-row">
+          {/* ── Chat column ─────────────────────────────────────────────── */}
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="mb-3 flex items-center justify-between">
+              <h1 className="text-lg font-extrabold tracking-tight">Refine your concept</h1>
+              <span className="text-xs font-semibold text-[var(--color-muted-foreground)]">
+                Round {round} / {maxRounds}
+              </span>
+            </div>
 
-          <p className="text-sm text-[var(--color-muted-foreground)]">
-            Drag the concepts into the ranking box in order of preference — your{" "}
-            <span className="font-semibold text-[var(--color-foreground)]">#1</span> is the one we refine or send to the designer.
-          </p>
-
-          {/* Concept pool */}
-          <div>
-            <p className="mb-2 text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
-              Concepts {pool.length > 0 ? `(${pool.length} unranked)` : "(all ranked)"}
-            </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              {pool.map((v) => (
-                <ConceptCard
-                  key={v.id}
-                  variation={v}
-                  color={primaryColor}
-                  draggable
-                  onDragStart={() => setDragId(v.id)}
-                  onDragEnd={() => setDragId(null)}
-                  action={{ label: "Add to ranking", onClick: () => addToRanking(v.id) }}
-                />
-              ))}
-              {pool.length === 0 && (
-                <p className="col-span-full rounded-md border border-dashed border-[var(--color-border)] py-4 text-center text-xs text-[var(--color-muted-foreground)]">
-                  Every concept is in your ranking below.
-                </p>
+            <div
+              ref={scrollRef}
+              className="min-h-[300px] flex-1 space-y-4 overflow-y-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3 sm:max-h-[460px]"
+            >
+              {messages.map((m) =>
+                m.kind === "text" ? (
+                  <ChatBubble key={m.id} role={m.role} color={primaryColor} brandName={brandName}>
+                    {m.text}
+                  </ChatBubble>
+                ) : (
+                  <ChatBubble key={m.id} role="assistant" color={primaryColor} brandName={brandName}>
+                    <div className="grid grid-cols-2 gap-2">
+                      {m.variationIds.map((id) => {
+                        const v = variationById(id);
+                        if (!v) return null;
+                        return (
+                          <ConceptCard
+                            key={id}
+                            variation={v}
+                            color={primaryColor}
+                            selected={bucketId === id}
+                            draggable
+                            onDragStart={() => setDragId(id)}
+                            onDragEnd={() => setDragId(null)}
+                            action={{
+                              label: bucketId === id ? "Added to pick" : "Add to pick",
+                              onClick: () => setBucketId(id),
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </ChatBubble>
+                ),
+              )}
+              {assistantTyping && (
+                <ChatBubble role="assistant" color={primaryColor} brandName={brandName}>
+                  <span className="inline-flex gap-1">
+                    <Dot color={primaryColor} /> <Dot color={primaryColor} delay="0.15s" />{" "}
+                    <Dot color={primaryColor} delay="0.3s" />
+                  </span>
+                </ChatBubble>
               )}
             </div>
-          </div>
 
-          {/* Ranking bucket */}
-          <div
-            onDragOver={(e) => {
-              if (dragId) e.preventDefault();
-            }}
-            onDrop={() => onDrop()}
-            className={cn(
-              "rounded-lg border-2 border-dashed p-3 transition-colors",
-              dragId ? "border-[var(--brand)] bg-[color-mix(in_srgb,var(--brand)_6%,transparent)]" : "border-[var(--color-border)]",
-            )}
-          >
-            <p className="mb-2 flex items-center gap-1.5 px-1 text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
-              Your ranking
-              {ranking.length === 0 && <span className="font-medium normal-case">— drag concepts here</span>}
-            </p>
-            <ol className="space-y-2">
-              {ranking.map((id, i) => {
-                const v = byId(id);
-                if (!v) return null;
-                return (
-                  <li
-                    key={id}
-                    draggable
-                    onDragStart={() => setDragId(id)}
-                    onDragEnd={() => setDragId(null)}
-                    onDragOver={(e) => {
-                      if (dragId && dragId !== id) e.preventDefault();
-                    }}
-                    onDrop={(e) => {
-                      e.stopPropagation();
-                      onDrop(i);
-                    }}
-                    className={cn(
-                      "flex items-center gap-3 rounded-md border bg-[var(--color-card)] p-2",
-                      i === 0 ? "border-[var(--brand)]" : "border-[var(--color-border)]",
-                    )}
-                  >
-                    <span
-                      className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-extrabold text-white"
-                      style={brand}
-                    >
-                      {i + 1}
-                    </span>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={v.imageUrl} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
-                    <span className="min-w-0 flex-1 text-sm font-semibold">
-                      Concept {currentRoundVariations.indexOf(v) + 1}
-                      {i === 0 && <span className="ml-1 text-xs font-bold" style={{ color: primaryColor }}>· top pick</span>}
-                      {v.feasibilityFlag && (
-                        <span className="block text-xs font-medium text-[var(--color-warning)]">Print check flagged</span>
-                      )}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      <IconBtn label="Move up" disabled={i === 0} onClick={() => move(id, -1)}>↑</IconBtn>
-                      <IconBtn label="Move down" disabled={i === ranking.length - 1} onClick={() => move(id, 1)}>↓</IconBtn>
-                      <IconBtn label="Remove from ranking" onClick={() => removeFromRanking(id)}>✕</IconBtn>
-                    </span>
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
-
-          {topPick && byId(topPick)?.feasibilityNotes && (
-            <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              {byId(topPick)?.feasibilityNotes}
-            </p>
-          )}
-
-          {/* Rating of the top pick */}
-          <div className="space-y-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-            <p className="text-sm font-bold">
-              How close is your #1 pick{topPick ? ` (Concept ${currentRoundVariations.indexOf(byId(topPick)!) + 1})` : ""}?
-            </p>
-            <div>
-              <div className="flex items-center justify-between">
-                <label htmlFor="match" className="text-sm font-semibold">Overall match</label>
-                <span className="text-sm font-bold tabular-nums" style={{ color: primaryColor }}>
-                  {rating.overallMatchPct}%
+            {/* Composer */}
+            <div className="mt-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-2">
+              <div className="flex items-center justify-between px-1 pb-1.5">
+                <span className="text-xs font-semibold text-[var(--color-foreground)]">
+                  How close is your #1 pick?
+                </span>
+                <span className="text-xs font-bold tabular-nums" style={{ color: primaryColor }}>
+                  {matchPct}%
                 </span>
               </div>
               <input
-                id="match"
+                aria-label="Overall match"
                 type="range"
                 min={0}
                 max={100}
                 step={5}
-                value={rating.overallMatchPct}
-                onChange={(e) => setRating((r) => ({ ...r, overallMatchPct: Number(e.target.value) }))}
-                className="mt-2 w-full cursor-pointer accent-[var(--brand)]"
+                value={matchPct}
+                onChange={(e) => setMatchPct(Number(e.target.value))}
+                className="w-full cursor-pointer accent-[var(--brand)]"
               />
+              <div className="mt-1.5 flex items-end gap-2">
+                <textarea
+                  rows={1}
+                  value={input}
+                  disabled={roundsExhausted}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void sendChat();
+                    }
+                  }}
+                  placeholder={
+                    roundsExhausted
+                      ? "Add your favourite concept to your pick, then continue"
+                      : "Tell me what to change…"
+                  }
+                  className="max-h-32 min-h-[40px] flex-1 resize-none rounded-md border border-[var(--color-input)] bg-[var(--color-card)] px-3 py-2 text-sm outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ring)] disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => void sendChat()}
+                  disabled={busy || !input.trim() || roundsExhausted}
+                  aria-label="Send"
+                  className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-white transition-opacity disabled:opacity-40 cursor-pointer"
+                  style={brand}
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-
-            <SegRow
-              label="Shape"
-              options={SHAPE.map((v) => ({ v, label: GEN_LABEL[v] }))}
-              value={rating.shapeScore}
-              onChange={(v) => setRating((r) => ({ ...r, shapeScore: v as (typeof SHAPE)[number] }))}
-              color={primaryColor}
-            />
-            <SegRow
-              label="Size"
-              options={SIZE.map((v) => ({ v, label: SIZE_LABEL[v] }))}
-              value={rating.sizeScore}
-              onChange={(v) => setRating((r) => ({ ...r, sizeScore: v as (typeof SIZE)[number] }))}
-              color={primaryColor}
-            />
-            <SegRow
-              label="Material"
-              options={MATERIAL.map((v) => ({ v, label: GEN_LABEL[v] }))}
-              value={rating.materialScore}
-              onChange={(v) => setRating((r) => ({ ...r, materialScore: v as (typeof MATERIAL)[number] }))}
-              color={primaryColor}
-            />
-
-            <Fieldset label="What should change?" htmlFor="cr" hint="Needed to refine — leave blank if it's already right.">
-              <Textarea
-                id="cr"
-                rows={2}
-                value={rating.changeRequestText}
-                onChange={(e) => setRating((r) => ({ ...r, changeRequestText: e.target.value }))}
-                placeholder="Make the base narrower and the curve deeper."
-              />
-            </Fieldset>
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button
-              variant="outline"
-              className="flex-1"
-              disabled={busy || round >= maxRounds}
-              onClick={refine}
+          {/* ── Bucket sidebar ──────────────────────────────────────────── */}
+          <aside className="shrink-0 lg:w-64">
+            <div
+              onDragOver={(e) => {
+                if (dragId) e.preventDefault();
+              }}
+              onDrop={() => {
+                if (dragId) setBucketId(dragId);
+                setDragId(null);
+              }}
+              className={cn(
+                "rounded-xl border-2 border-dashed p-3 transition-colors",
+                dragId
+                  ? "border-[var(--brand)] bg-[color-mix(in_srgb,var(--brand)_6%,transparent)]"
+                  : "border-[var(--color-border)]",
+              )}
             >
-              <Sparkles className="h-4 w-4" />
-              {round >= maxRounds ? "No rounds left" : "Refine with changes"}
-            </Button>
-            <Button className="flex-1" style={brand} disabled={busy} onClick={proceed}>
-              This is close enough <ArrowRight className="h-4 w-4" />
-            </Button>
-          </div>
+              <p className="text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+                Your pick
+              </p>
+
+              {bucketVariation ? (
+                <div className="mt-2 space-y-2">
+                  <div className="overflow-hidden rounded-lg border-2 border-[var(--brand)]">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={bucketVariation.imageUrl}
+                      alt="Selected concept"
+                      className="aspect-square w-full object-cover"
+                    />
+                  </div>
+                  {bucketVariation.feasibilityFlag && bucketVariation.feasibilityNotes && (
+                    <p className="rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+                      {bucketVariation.feasibilityNotes}
+                    </p>
+                  )}
+                  <Button className="w-full" style={brand} disabled={busy} onClick={proceedWithBucket}>
+                    Continue with this <ArrowRight className="h-4 w-4" />
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setBucketId(null)}
+                    className="flex w-full items-center justify-center gap-1 text-xs font-semibold text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] cursor-pointer"
+                  >
+                    <X className="h-3 w-3" /> Choose a different one
+                  </button>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
+                  When a concept matches your idea, <span className="font-semibold">drag it here</span> —
+                  or press <span className="font-semibold">“Add to pick”</span> on it — then continue to
+                  book a designer with that image.
+                </p>
+              )}
+            </div>
+          </aside>
         </section>
       )}
 
@@ -674,11 +672,13 @@ function ConceptCard({
   variation,
   color,
   action,
+  selected = false,
   ...dnd
 }: {
   variation: Variation;
   color: string;
   action: { label: string; onClick: () => void };
+  selected?: boolean;
 } & React.HTMLAttributes<HTMLDivElement>) {
   // Pollinations renders each image on first request (~10s, sometimes rate-
   // limited, sometimes the connection just hangs) and caches after. Retry the
@@ -720,9 +720,20 @@ function ConceptCard({
   return (
     <div
       {...dnd}
-      className="group overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]"
+      className={cn(
+        "group overflow-hidden rounded-lg border-2 bg-[var(--color-card)] transition-colors",
+        selected ? "border-[var(--brand)]" : "border-[var(--color-border)]",
+      )}
     >
       <div className="relative cursor-grab active:cursor-grabbing">
+        {selected && (
+          <span
+            className="absolute right-1.5 top-1.5 z-10 grid h-5 w-5 place-items-center rounded-full text-white"
+            style={{ background: color }}
+          >
+            <Check className="h-3 w-3" />
+          </span>
+        )}
         <div className="relative aspect-square w-full bg-[var(--color-muted)]">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -785,28 +796,50 @@ function ConceptCard({
   );
 }
 
-function IconBtn({
+function ChatBubble({
+  role,
+  color,
+  brandName,
   children,
-  label,
-  onClick,
-  disabled,
 }: {
+  role: "assistant" | "user";
+  color: string;
+  brandName: string;
   children: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
 }) {
+  const isUser = role === "user";
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className="grid h-7 w-7 place-items-center rounded border border-[var(--color-border)] bg-[var(--color-card)] text-xs transition-colors hover:bg-[var(--color-muted)] disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
-    >
-      {children}
-    </button>
+    <div className={cn("flex gap-2", isUser ? "flex-row-reverse" : "flex-row")}>
+      <span
+        className={cn(
+          "mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-[10px] font-bold",
+          isUser ? "bg-[var(--color-muted)] text-[var(--color-muted-foreground)]" : "text-white",
+        )}
+        style={isUser ? undefined : { background: color }}
+        aria-hidden="true"
+      >
+        {isUser ? "You" : brandName.slice(0, 1)}
+      </span>
+      <div
+        className={cn(
+          "max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed",
+          isUser
+            ? "rounded-tr-sm bg-[var(--color-muted)] text-[var(--color-foreground)]"
+            : "rounded-tl-sm border border-[var(--color-border)] bg-[var(--color-background)]",
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Dot({ color, delay = "0s" }: { color: string; delay?: string }) {
+  return (
+    <span
+      className="inline-block h-1.5 w-1.5 animate-bounce rounded-full"
+      style={{ background: color, animationDelay: delay }}
+    />
   );
 }
 
@@ -888,41 +921,3 @@ function StepDots({ step }: { step: Step }) {
   );
 }
 
-function SegRow({
-  label,
-  options,
-  value,
-  onChange,
-  color,
-}: {
-  label: string;
-  options: { v: string; label: string }[];
-  value: string;
-  onChange: (v: string) => void;
-  color: string;
-}) {
-  return (
-    <div>
-      <p className="mb-1.5 text-sm font-semibold">{label}</p>
-      <div className="grid grid-cols-3 gap-1.5">
-        {options.map((o) => {
-          const active = value === o.v;
-          return (
-            <button
-              key={o.v}
-              type="button"
-              onClick={() => onChange(o.v)}
-              className={cn(
-                "rounded-md border px-2 py-1.5 text-xs font-semibold transition-colors cursor-pointer",
-                active ? "text-white" : "border-[var(--color-border)] bg-[var(--color-card)] hover:bg-[var(--color-muted)]",
-              )}
-              style={active ? { background: color, borderColor: color } : undefined}
-            >
-              {o.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}

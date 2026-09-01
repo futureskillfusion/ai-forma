@@ -17,7 +17,7 @@ export function WidgetShell({
       className="flex min-h-full flex-1 flex-col bg-grid"
       style={{ ["--brand" as string]: primaryColor }}
     >
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col px-4 py-8 sm:py-12">
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-8 sm:py-12">
         <header className="mb-6 flex items-center gap-3">
           {logoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
