@@ -680,14 +680,38 @@ function ConceptCard({
   color: string;
   action: { label: string; onClick: () => void };
 } & React.HTMLAttributes<HTMLDivElement>) {
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   return (
     <div
       {...dnd}
       className="group overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-card)]"
     >
       <div className="relative cursor-grab active:cursor-grabbing">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={variation.imageUrl} alt="Generated concept" className="aspect-square w-full object-cover" />
+        <div className="relative aspect-square w-full bg-[var(--color-muted)]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={variation.imageUrl}
+            alt="Generated concept"
+            className={cn(
+              "h-full w-full object-cover transition-opacity duration-300",
+              state === "ready" ? "opacity-100" : "opacity-0",
+            )}
+            onLoad={() => setState("ready")}
+            onError={() => setState("error")}
+          />
+          {state === "loading" && (
+            <span
+              className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 animate-spin rounded-full border-2 border-[var(--color-border)]"
+              style={{ borderTopColor: color }}
+              aria-label="Generating concept"
+            />
+          )}
+          {state === "error" && (
+            <span className="absolute inset-0 grid place-items-center px-2 text-center text-[10px] font-medium text-[var(--color-muted-foreground)]">
+              Concept still rendering — give it a moment
+            </span>
+          )}
+        </div>
         {variation.feasibilityFlag && (
           <span className="absolute inset-x-0 bottom-0 flex items-center gap-1 bg-amber-500/90 px-2 py-1 text-[10px] font-semibold text-white">
             <TriangleAlert className="h-3 w-3" /> Print check

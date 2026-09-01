@@ -10,6 +10,7 @@ export interface NavItem {
   label: string;
   icon: ReactNode;
   exact?: boolean;
+  badge?: number;
 }
 
 export function SidebarNav({ items }: { items: NavItem[] }) {
@@ -35,7 +36,19 @@ export function SidebarNav({ items }: { items: NavItem[] }) {
             <span className="grid h-5 w-5 place-items-center [&>svg]:h-[18px] [&>svg]:w-[18px]">
               {item.icon}
             </span>
-            {item.label}
+            <span className="flex-1">{item.label}</span>
+            {item.badge ? (
+              <span
+                className={cn(
+                  "grid min-w-5 place-items-center rounded-full px-1.5 text-xs font-bold",
+                  isActive
+                    ? "bg-[var(--color-on-primary)] text-[var(--color-primary)]"
+                    : "bg-[var(--color-accent)] text-[var(--color-on-accent)]",
+                )}
+              >
+                {item.badge}
+              </span>
+            ) : null}
           </Link>
         );
       })}

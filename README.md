@@ -1,13 +1,13 @@
-# Forma Intake
+# AI Forma
 
 AI-guided customer design intake for 3D-printing / manufacturing businesses.
 Multi-tenant SaaS operated by **Systematic IT Solutions** (platform owner), licensed
 to manufacturers ("tenants") who embed the intake widget on their own website.
 
-> This repo is a **full-stack vertical slice**: the complete `provision → intake →
-> handoff → cost` path works end to end. External vendors (image gen, voice, LLM,
-> Stripe, Calendly, Twilio, SendGrid) run through **mock adapters** — no API keys
-> needed to run it.
+> Full-stack app covering `request access → approve → provision → embed → intake →
+> rank/refine → handoff → book → cost`. **Image generation is real and free**
+> (Pollinations, no API key). Voice, LLM, billing, calendar and messaging run
+> through mock adapters — no keys needed to run it.
 
 ---
 
@@ -15,7 +15,8 @@ to manufacturers ("tenants") who embed the intake widget on their own website.
 
 | Area | Included |
 |---|---|
-| **Super admin console** (`/admin`) | Separate hardened login · tenant list with live cost-vs-retainer margin · create tenant (account + first admin + subscription + embed key) · suspend / reactivate · per-tenant plan-limit / feature-flag overrides · platform usage & margin · global AI kill switch · audit log |
+| **Public site** (`/`) | Marketing landing · **`/request-access`** self-service signup form · Terms / Privacy pages |
+| **Super admin console** (`/admin`) | Separate hardened login · **`/admin/requests`** — review access requests, **Approve** (provisions tenant + first admin + embed key + subscription) or **Decline** · tenant list with live cost-vs-retainer margin · manual create tenant · suspend / reactivate · per-tenant plan-limit / feature-flag overrides · platform usage & margin · global AI kill switch · audit log |
 | **Tenant dashboard** (`/app`) | Login (admins + designers) · quota / spend / plan card · copyable embed snippet · customer queries list + full detail (every round, ratings, feasibility notes, handoff packet, appointment) · designer roster with seat enforcement · branding (colour + logo) · suspended tenants see only a billing notice |
 | **Customer widget** (`/w/<embedKey>`) | Consent gate · describe (text; voice endpoint stubbed) · AI image rounds (2–3 / round) · per-image printability check · rate (match % + shape/size/material + change request) · loop within the plan's round cap, else escalate to a human · LLM-compiled handoff packet · confidence-tiered appointment booking · respects tenant status + kill switch |
 | **Enforcement** | `tenantId` derived from session/embed key on every scoped query (never client-supplied) · per-query customer bearer tokens · plan query-cap + regen-cap · kill switch blocks all image/voice calls · every billable call writes a `UsageLog` row |
@@ -26,7 +27,8 @@ to manufacturers ("tenants") who embed the intake widget on their own website.
 - **PostgreSQL + Prisma**
 - **Auth** — signed JWT session cookies (`jose`), separate cookie domains for super admin vs tenant users, short-lived per-query tokens for the widget
 - **Tailwind CSS v4** — design tokens from the `ui-ux-pro-max` skill (Plus Jakarta Sans, trust-blue `#2563EB` + orange CTA, light-first, glass accents on the widget)
-- Mock vendor adapters in `src/lib/adapters/` — swap real implementations behind the same interfaces
+- **Image generation** — `IMAGE_PROVIDER=pollinations` (free, key-less, real FLUX/SDXL images) or `mock`. Swap in a paid provider in `src/lib/adapters/image-*.ts`
+- Other vendor adapters in `src/lib/adapters/` are mock — swap real implementations behind the same interfaces
 
 ## Getting started
 
@@ -90,13 +92,15 @@ npm test
 
 ## Going to production (next steps)
 
-1. Implement real adapters in `src/lib/adapters/` and set `USE_MOCK_ADAPTERS=false`
+1. Real LLM / voice / billing / calendar / SMS+email adapters; set `USE_MOCK_ADAPTERS=false`
 2. Stripe: subscription lifecycle + `past_due` / `canceled` webhooks → `tenant.status`
-3. Real async queue (BullMQ/SQS) behind the `Job` model instead of inline calls
-4. S3 for audio/image storage + encryption at rest; access logging for confidentiality
-5. Whisper multipart upload on `/api/queries/:id/transcribe`
-6. Embed-origin allow-listing enforcement + rate limiting on `POST /api/queries`
-7. NDA-escalation workflow surface for tenant admins
+3. Transactional email for access-request approval / decline and the tenant welcome (currently mock-logged)
+4. Real async queue (BullMQ/SQS) behind the `Job` model instead of inline calls
+5. Store generated images to S3 instead of hot-linking the free provider; encryption at rest
+6. Whisper multipart upload on `/api/queries/:id/transcribe`
+7. Rate limiting on `POST /api/access-requests` and `POST /api/queries`; embed-origin enforcement
+8. Replace the placeholder Terms / Privacy pages with counsel-reviewed copy
+9. Custom domains / subdomains for tenant widgets; monitoring
 
 ## Layout
 

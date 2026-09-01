@@ -3,7 +3,7 @@ import type { Query } from "@prisma/client";
 import { db } from "./db";
 import { HttpError } from "./rbac";
 import { verifyCustomerToken } from "./auth";
-import { imageGen, llm, booking } from "./adapters";
+import { imageGen, llm, booking, IMAGE_PROVIDER } from "./adapters";
 import { assertAiEnabled } from "./platform";
 import { resolvePlanLimit } from "./plan";
 import { logUsage } from "./usage";
@@ -64,9 +64,11 @@ export async function generateRound(query: Query) {
     tenantId: query.tenantId,
     queryId: query.id,
     vendor: "image_gen",
-    costUsd: imageCost(limit.imageModelTier, units, query.imageModelChoice),
+    // The free provider (Pollinations) has no per-image cost; a paid provider
+    // would use the model price sheet.
+    costUsd: IMAGE_PROVIDER === "pollinations" ? 0 : imageCost(limit.imageModelTier, units, query.imageModelChoice),
     tokensOrUnits: units,
-    meta: { round: nextRound, tier: limit.imageModelTier, model: query.imageModelChoice },
+    meta: { round: nextRound, tier: limit.imageModelTier, model: query.imageModelChoice, provider: IMAGE_PROVIDER },
   });
 
   // Feasibility check (LLM) — advisory note attached to each variation.

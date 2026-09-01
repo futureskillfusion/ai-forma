@@ -10,8 +10,8 @@ const jakarta = Plus_Jakarta_Sans({
 
 export const metadata: Metadata = {
   title: {
-    default: "Forma Intake",
-    template: "%s · Forma Intake",
+    default: "AI Forma",
+    template: "%s · AI Forma",
   },
   description:
     "AI-guided customer design intake for 3D printing and manufacturing businesses.",

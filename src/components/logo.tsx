@@ -10,7 +10,7 @@ export function Logo({ className, showText = true }: { className?: string; showT
         </svg>
       </span>
       {showText && (
-        <span className="whitespace-nowrap text-[15px] font-extrabold tracking-tight">Forma Intake</span>
+        <span className="whitespace-nowrap text-[15px] font-extrabold tracking-tight">AI Forma</span>
       )}
     </span>
   );

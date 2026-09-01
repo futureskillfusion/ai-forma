@@ -1,13 +1,10 @@
 import { z } from "zod";
-import { nanoid } from "nanoid";
 import { db } from "@/lib/db";
-import { apiRequireSuperAdmin, toErrorResponse, HttpError } from "@/lib/rbac";
+import { apiRequireSuperAdmin, toErrorResponse } from "@/lib/rbac";
 import { readJson } from "@/lib/http";
-import { hashPassword } from "@/lib/password";
-import { slugify } from "@/lib/slug";
-import { billing } from "@/lib/adapters";
 import { writeAudit } from "@/lib/platform";
 import { tenantMetrics } from "@/lib/tenant-metrics";
+import { provisionTenant } from "@/lib/provisioning";
 
 export async function GET() {
   try {
@@ -45,60 +42,24 @@ export async function POST(req: Request) {
     const admin = await apiRequireSuperAdmin();
     const body = await readJson(req, CreateBody);
 
-    let slug = slugify(body.name);
-    if (!slug) slug = `tenant-${nanoid(6).toLowerCase()}`;
-    if (await db.tenant.findUnique({ where: { slug } })) {
-      slug = `${slug}-${nanoid(4).toLowerCase()}`;
-    }
-
-    const email = body.adminEmail.toLowerCase();
-    if (await db.tenantUser.findFirst({ where: { email } })) {
-      throw new HttpError(409, "A user with that email already exists");
-    }
-
-    const embedKey = `fk_${nanoid(24)}`;
-    const passwordHash = await hashPassword(body.adminPassword);
-
-    const tenant = await db.tenant.create({
-      data: {
-        name: body.name,
-        slug,
-        planTier: body.planTier,
-        retainerAmount: body.retainerAmount,
-        embedKey,
-        embedAllowedOrigins: body.embedAllowedOrigins,
-        status: "active",
-        subscriptionStatus: "trialing",
-        users: {
-          create: {
-            role: "tenant_admin",
-            name: body.adminName,
-            email,
-            passwordHash,
-          },
-        },
-      },
-    });
-
-    const sub = await billing.createSubscription({
-      tenantId: tenant.id,
-      tenantName: tenant.name,
-      planTier: tenant.planTier,
-      retainerAmount: Number(tenant.retainerAmount),
-    });
-    await db.tenant.update({
-      where: { id: tenant.id },
-      data: { subscriptionStatus: sub.status, currentPeriodEnd: sub.currentPeriodEnd },
+    const result = await provisionTenant({
+      businessName: body.name,
+      planTier: body.planTier,
+      retainerAmount: body.retainerAmount,
+      adminName: body.adminName,
+      adminEmail: body.adminEmail,
+      adminPassword: body.adminPassword,
+      embedAllowedOrigins: body.embedAllowedOrigins,
     });
 
     await writeAudit({
       actorId: admin.sub,
       action: "tenant_created",
-      targetTenant: tenant.id,
-      metadata: { planTier: tenant.planTier, retainerAmount: Number(tenant.retainerAmount) },
+      targetTenant: result.tenantId,
+      metadata: { planTier: body.planTier, retainerAmount: body.retainerAmount },
     });
 
-    return Response.json({ tenant: { id: tenant.id, slug: tenant.slug, embedKey } }, { status: 201 });
+    return Response.json({ tenant: result }, { status: 201 });
   } catch (err) {
     return toErrorResponse(err);
   }

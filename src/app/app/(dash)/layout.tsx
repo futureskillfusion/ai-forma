@@ -29,7 +29,7 @@ export default async function DashLayout({ children }: { children: ReactNode }) 
           <Card className="p-8 text-center">
             <h1 className="text-xl font-extrabold">Account suspended</h1>
             <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">
-              Your Forma Intake subscription is currently inactive, so the intake widget on your
+              Your AI Forma subscription is currently inactive, so the intake widget on your
               website is paused. Please settle the outstanding balance or contact Systematic IT
               Solutions to reactivate.
             </p>

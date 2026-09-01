@@ -2,7 +2,7 @@ import { PageHeader } from "@/components/shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { db } from "@/lib/db";
 import { getPlatformConfig } from "@/lib/platform";
-import { ADAPTER_MODE } from "@/lib/adapters";
+import { ADAPTER_MODE, IMAGE_PROVIDER } from "@/lib/adapters";
 import { dateTime } from "@/lib/format";
 import { KillSwitch } from "./kill-switch";
 
@@ -33,11 +33,17 @@ export default async function PlatformPage() {
           </CardHeader>
           <CardContent>
             <p className="text-sm">
-              Adapters are running in{" "}
+              Non-image adapters are running in{" "}
               <span className="font-bold uppercase">{ADAPTER_MODE}</span> mode.
               {ADAPTER_MODE === "mock"
-                ? " All image, voice, LLM, billing, booking and notification calls are simulated with deterministic fake data — no external API keys required."
+                ? " Voice, LLM, billing, booking and notification calls are simulated with deterministic fake data — no external API keys required."
                 : " Real vendor credentials are in use."}
+            </p>
+            <p className="mt-2 text-sm">
+              Image generation: <span className="font-bold uppercase">{IMAGE_PROVIDER}</span>
+              {IMAGE_PROVIDER === "pollinations"
+                ? " — free, key-less real image generation (Pollinations). No per-image cost is logged."
+                : " — offline placeholder images."}
             </p>
           </CardContent>
         </Card>

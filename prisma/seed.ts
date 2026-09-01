@@ -57,7 +57,7 @@ function placeholder(seed: string, variant: number): string {
 }
 
 async function main() {
-  console.log("Seeding Forma Intake…");
+  console.log("Seeding AI Forma…");
 
   await db.platformConfig.upsert({
     where: { id: "singleton" },
@@ -333,6 +333,31 @@ async function main() {
       },
     },
   });
+
+  // ── Access requests — prospective tenants awaiting review ──────────────────
+  if ((await db.accessRequest.count()) === 0) {
+    await db.accessRequest.createMany({
+      data: [
+        {
+          businessName: "Vireo Additive",
+          contactName: "Hannah Boyd",
+          email: "hannah@vireoadditive.com",
+          phone: "+1 415 555 0142",
+          website: "https://vireoadditive.com",
+          expectedMonthlyQueries: 320,
+          message: "We do custom SLA parts for medical device startups and get a lot of vague briefs.",
+        },
+        {
+          businessName: "Bramble & Bolt",
+          contactName: "Marco Iyer",
+          email: "marco@brambleandbolt.co",
+          website: "https://brambleandbolt.co",
+          expectedMonthlyQueries: 90,
+          message: "Small studio, mostly homeware. Want customers to visualise before booking a call.",
+        },
+      ],
+    });
+  }
 
   console.log("\nSeed complete.\n");
   console.table({

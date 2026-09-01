@@ -1,6 +1,6 @@
 (function () {
   "use strict";
-  // Forma Intake embed loader. The tenant pastes:
+  // AI Forma embed loader. The tenant pastes:
   //   <div id="forma-intake"></div>
   //   <script src="https://<host>/embed.js" data-forma-key="fk_..." async></script>
   var current = document.currentScript;
@@ -8,7 +8,7 @@
 
   var key = current.getAttribute("data-forma-key");
   if (!key) {
-    console.error("[Forma Intake] missing data-forma-key on embed script");
+    console.error("[AI Forma] missing data-forma-key on embed script");
     return;
   }
 

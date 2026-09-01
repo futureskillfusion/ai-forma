@@ -41,6 +41,9 @@ const STATUS_TONE: Record<string, Tone> = {
   handed_off: "success",
   booked: "success",
   escalated: "warning",
+  pending: "warning",
+  approved: "success",
+  declined: "danger",
 };
 
 export function StatusBadge({ status }: { status: string }) {

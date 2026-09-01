@@ -38,7 +38,7 @@ export function WidgetShell({
         {children}
         <footer className="mt-8 flex items-center justify-center gap-1.5 text-xs text-[var(--color-muted-foreground)]">
           <ShieldCheck className="h-3.5 w-3.5" />
-          Your idea stays confidential · powered by Forma Intake
+          Your idea stays confidential · powered by AI Forma
         </footer>
       </div>
     </div>

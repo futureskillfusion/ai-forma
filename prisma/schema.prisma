@@ -1,4 +1,4 @@
-// Forma Intake — data model
+// AI Forma — data model
 // Multi-tenant SaaS. Every tenant-scoped row carries `tenantId`. Queries are
 // always filtered by the tenantId derived from the authenticated session or
 // the embed key — never from a raw client parameter.
@@ -120,6 +120,14 @@ enum AuditAction {
   plan_limits_updated
   kill_switch_toggled
   subscription_status_changed
+  access_request_approved
+  access_request_declined
+}
+
+enum AccessRequestStatus {
+  pending
+  approved
+  declined
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,6 +164,29 @@ model AuditLog {
 
   @@index([targetTenant])
   @@index([createdAt])
+}
+
+// A prospective manufacturer asks the platform owner for an account.
+// Super admin reviews and either provisions a Tenant (approve) or declines.
+model AccessRequest {
+  id                    String              @id @default(uuid())
+  businessName          String
+  contactName           String
+  email                 String
+  phone                 String?
+  website               String?
+  expectedMonthlyQueries Int?
+  message               String?
+  status                AccessRequestStatus @default(pending)
+  // Set when approved and a Tenant is provisioned from this request.
+  tenantId              String?
+  reviewedByEmail       String?
+  reviewedAt            DateTime?
+  declineReason         String?
+  createdAt             DateTime            @default(now())
+
+  @@index([status, createdAt])
+  @@index([email])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
