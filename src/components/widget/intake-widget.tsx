@@ -114,6 +114,7 @@ export function IntakeWidget({
     [variations, round],
   );
   const bucketVariation = variationById(bucketId);
+  const toggleBucket = (id: string) => setBucketId((cur) => (cur === id ? null : id));
 
   const pushMsg = useCallback((m: ChatMsg) => setMessages((prev) => [...prev, m]), []);
 
@@ -451,8 +452,8 @@ export function IntakeWidget({
                     {m.text}
                   </ChatBubble>
                 ) : (
-                  <ChatBubble key={m.id} role="assistant" color={primaryColor} brandName={brandName}>
-                    <div className="grid grid-cols-2 gap-2">
+                  <ChatBubble key={m.id} role="assistant" color={primaryColor} brandName={brandName} wide>
+                    <div className="grid grid-cols-2 gap-3">
                       {m.variationIds.map((id) => {
                         const v = variationById(id);
                         if (!v) return null;
@@ -461,14 +462,11 @@ export function IntakeWidget({
                             key={id}
                             variation={v}
                             color={primaryColor}
-                            selected={bucketId === id}
                             draggable
                             onDragStart={() => setDragId(id)}
                             onDragEnd={() => setDragId(null)}
-                            action={{
-                              label: bucketId === id ? "Added to pick" : "Add to pick",
-                              onClick: () => setBucketId(id),
-                            }}
+                            onPick={() => toggleBucket(id)}
+                            picked={bucketId === id}
                           />
                         );
                       })}
@@ -488,25 +486,7 @@ export function IntakeWidget({
 
             {/* Composer */}
             <div className="mt-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-2">
-              <div className="flex items-center justify-between px-1 pb-1.5">
-                <span className="text-xs font-semibold text-[var(--color-foreground)]">
-                  How close is your #1 pick?
-                </span>
-                <span className="text-xs font-bold tabular-nums" style={{ color: primaryColor }}>
-                  {matchPct}%
-                </span>
-              </div>
-              <input
-                aria-label="Overall match"
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={matchPct}
-                onChange={(e) => setMatchPct(Number(e.target.value))}
-                className="w-full cursor-pointer accent-[var(--brand)]"
-              />
-              <div className="mt-1.5 flex items-end gap-2">
+              <div className="flex items-end gap-2">
                 <textarea
                   rows={1}
                   value={input}
@@ -583,16 +563,37 @@ export function IntakeWidget({
                     onClick={() => setBucketId(null)}
                     className="flex w-full items-center justify-center gap-1 text-xs font-semibold text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] cursor-pointer"
                   >
-                    <X className="h-3 w-3" /> Choose a different one
+                    <X className="h-3 w-3" /> Remove from pick
                   </button>
                 </div>
               ) : (
                 <p className="mt-2 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
-                  When a concept matches your idea, <span className="font-semibold">drag it here</span> —
-                  or press <span className="font-semibold">“Add to pick”</span> on it — then continue to
-                  book a designer with that image.
+                  When a concept matches your idea, <span className="font-semibold">click it</span> or
+                  <span className="font-semibold"> drag it here</span>. You can remove it again any time.
                 </p>
               )}
+
+              {/* Overall match — lives with the pick */}
+              <div className="mt-3 border-t border-[var(--color-border)] pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-[var(--color-foreground)]">
+                    How close is your #1 pick?
+                  </span>
+                  <span className="text-xs font-bold tabular-nums" style={{ color: primaryColor }}>
+                    {matchPct}%
+                  </span>
+                </div>
+                <input
+                  aria-label="Overall match"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={matchPct}
+                  onChange={(e) => setMatchPct(Number(e.target.value))}
+                  className="mt-1.5 w-full cursor-pointer accent-[var(--brand)]"
+                />
+              </div>
             </div>
           </aside>
         </section>
@@ -678,14 +679,14 @@ export function IntakeWidget({
 function ConceptCard({
   variation,
   color,
-  action,
-  selected = false,
+  onPick,
+  picked = false,
   ...dnd
 }: {
   variation: Variation;
   color: string;
-  action: { label: string; onClick: () => void };
-  selected?: boolean;
+  onPick: () => void;
+  picked?: boolean;
 } & React.HTMLAttributes<HTMLDivElement>) {
   // Pollinations renders each image on first request (~10s, sometimes rate-
   // limited, sometimes the connection just hangs) and caches after. Retry the
@@ -729,11 +730,24 @@ function ConceptCard({
       {...dnd}
       className={cn(
         "group overflow-hidden rounded-lg border-2 bg-[var(--color-card)] transition-colors",
-        selected ? "border-[var(--brand)]" : "border-[var(--color-border)]",
+        picked ? "border-[var(--brand)]" : "border-[var(--color-border)]",
       )}
     >
-      <div className="relative cursor-grab active:cursor-grabbing">
-        {selected && (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onPick}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onPick();
+          }
+        }}
+        aria-pressed={picked}
+        aria-label={picked ? "Remove this concept from your pick" : "Add this concept to your pick"}
+        className="relative cursor-pointer active:cursor-grabbing"
+      >
+        {picked && (
           <span
             className="absolute right-1.5 top-1.5 z-10 grid h-5 w-5 place-items-center rounded-full text-white"
             style={{ background: color }}
@@ -773,7 +787,8 @@ function ConceptCard({
               </span>
               <button
                 type="button"
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   setAttempt(0);
                   setState("loading");
                   if (imgRef.current) imgRef.current.src = variation.imageUrl;
@@ -793,11 +808,19 @@ function ConceptCard({
       </div>
       <button
         type="button"
-        onClick={action.onClick}
-        className="w-full border-t border-[var(--color-border)] px-2 py-1.5 text-xs font-semibold transition-colors hover:bg-[var(--color-muted)] cursor-pointer"
+        onClick={onPick}
+        className={cn(
+          "flex w-full items-center justify-center gap-1 border-t border-[var(--color-border)] px-2 py-1.5 text-xs font-semibold transition-colors hover:bg-[var(--color-muted)] cursor-pointer",
+        )}
         style={{ color }}
       >
-        {action.label}
+        {picked ? (
+          <>
+            <X className="h-3 w-3" /> Remove from pick
+          </>
+        ) : (
+          "Add to pick"
+        )}
       </button>
     </div>
   );
@@ -808,11 +831,13 @@ function ChatBubble({
   color,
   brandName,
   children,
+  wide = false,
 }: {
   role: "assistant" | "user";
   color: string;
   brandName: string;
   children: React.ReactNode;
+  wide?: boolean;
 }) {
   const isUser = role === "user";
   return (
@@ -829,10 +854,15 @@ function ChatBubble({
       </span>
       <div
         className={cn(
-          "max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed",
+          "min-w-0 rounded-2xl text-sm leading-relaxed",
+          // Concept grids span the full chat width so every image is the same
+          // size; text bubbles stay chat-width-limited.
+          wide ? "flex-1" : "max-w-[85%] px-3 py-2",
           isUser
             ? "rounded-tr-sm bg-[var(--color-muted)] text-[var(--color-foreground)]"
-            : "rounded-tl-sm border border-[var(--color-border)] bg-[var(--color-background)]",
+            : wide
+              ? ""
+              : "rounded-tl-sm border border-[var(--color-border)] bg-[var(--color-background)]",
         )}
       >
         {children}
