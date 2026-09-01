@@ -306,7 +306,14 @@ export function IntakeWidget({
 
   // ── render ────────────────────────────────────────────────────────────────
   return (
-    <div className="glass rounded-2xl border p-6 sm:p-8">
+    <div
+      className={cn(
+        "glass w-full rounded-2xl border p-6 sm:p-8",
+        // The chat + "your pick" review step uses the full widened frame;
+        // every other step stays a comfortable single column.
+        step === "review" ? "mx-auto max-w-5xl" : "mx-auto max-w-2xl",
+      )}
+    >
       <StepDots step={step} />
 
       {error && (
@@ -424,7 +431,7 @@ export function IntakeWidget({
       )}
 
       {step === "review" && (
-        <section className="flex flex-col gap-4 lg:flex-row">
+        <section className="flex flex-col gap-5 lg:flex-row lg:items-start">
           {/* ── Chat column ─────────────────────────────────────────────── */}
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="mb-3 flex items-center justify-between">
@@ -533,7 +540,7 @@ export function IntakeWidget({
           </div>
 
           {/* ── Bucket sidebar ──────────────────────────────────────────── */}
-          <aside className="shrink-0 lg:w-64">
+          <aside className="shrink-0 lg:w-72">
             <div
               onDragOver={(e) => {
                 if (dragId) e.preventDefault();
