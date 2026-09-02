@@ -1,51 +1,55 @@
-# Deploy AI Forma (Railway) — quick path
+# Deploy AI Forma — Vercel + Neon (free)
 
 Live in ~10 minutes, no paid API keys (runs in mock + free image mode).
+Both Vercel Hobby and Neon free tier have **no trial expiry**.
 
-## 1. Push the code (done by dev)
+## 1. Push the code (dev — already done)
 
 ```bash
 git remote add origin https://github.com/futureskillfusion/ai-forma.git
 git push -u origin main
 ```
 
-## 2. Railway
+## 2. Database — Neon
 
-1. Go to **railway.app** → sign in with the **futureskillfusion** GitHub account.
-2. **New Project → Deploy from GitHub repo → `futureskillfusion/ai-forma`.**
-3. In the project, **+ New → Database → PostgreSQL**. Railway creates it and exposes
-   `DATABASE_URL` automatically.
-4. Open the **web service → Variables** and add:
+1. Go to **neon.tech** → sign up (GitHub is fine) → **Create project** (name: `ai-forma`, region near you).
+2. On the project dashboard, open **Connection Details**. You need **two** strings:
+   - **Pooled** connection (has `-pooler` in the host) → this is `DATABASE_URL`
+   - **Direct** connection (toggle off "Pooled connection") → this is `DIRECT_URL`
+   Copy both.
+
+## 3. Hosting — Vercel
+
+1. Go to **vercel.com** → sign in with the **futureskillfusion** GitHub account.
+2. **Add New → Project → Import `futureskillfusion/ai-forma`.**
+3. Before clicking Deploy, open **Environment Variables** and add:
 
    | Variable | Value |
    |---|---|
-   | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (reference the Postgres service) |
-   | `AUTH_SECRET` | a 32+ char random string — run `openssl rand -hex 32` |
-   | `NEXT_PUBLIC_APP_URL` | your Railway URL, e.g. `https://ai-forma-production.up.railway.app` (set after the first deploy gives you the domain, then redeploy) |
+   | `DATABASE_URL` | Neon **pooled** string |
+   | `DIRECT_URL` | Neon **direct** string |
+   | `AUTH_SECRET` | 32+ random chars — run `openssl rand -hex 32` |
    | `USE_MOCK_ADAPTERS` | `true` |
-   | `IMAGE_PROVIDER` | `pollinations` (or `huggingface` + `HUGGINGFACE_API_TOKEN`) |
+   | `IMAGE_PROVIDER` | `pollinations` |
+   | `NEXT_PUBLIC_APP_URL` | leave blank for now |
 
-5. **Settings → Networking → Generate Domain.** Copy that URL into `NEXT_PUBLIC_APP_URL`
-   above and redeploy.
+4. Click **Deploy**. The build runs `prisma migrate deploy`, so the database
+   tables are created automatically.
+5. After it finishes, Vercel shows the URL (e.g. `https://ai-forma.vercel.app`).
+   Put that into `NEXT_PUBLIC_APP_URL` (Project → Settings → Environment Variables)
+   and **Redeploy** once.
 
-The `start` script runs `prisma migrate deploy` on every boot, so the database schema
-is created automatically on the first deploy.
+## 4. Seed the demo data (once)
 
-## 3. Seed the demo data (once)
+Migrations create empty tables. To get the demo tenants + logins, run the seed
+locally against the Neon **direct** URL:
 
-The migrations create empty tables. To get the demo tenants + logins:
+```bash
+cd "E:/Modeling App"
+DATABASE_URL="<Neon direct URL>" DIRECT_URL="<Neon direct URL>" npm run db:seed
+```
 
-- In Railway, open the **Postgres service → Connect** and copy its **public**
-  `DATABASE_URL`.
-- Locally:
-
-  ```bash
-  DATABASE_URL="<paste the Railway public URL>" npm run db:seed
-  ```
-
-That inserts the super admin, demo tenants, and a sample journey.
-
-## 4. Log in
+## 5. Log in
 
 | Surface | URL | Credentials |
 |---|---|---|
@@ -55,9 +59,12 @@ That inserts the super admin, demo tenants, and a sample journey.
 
 > Change or remove the demo super-admin before real use.
 
-## Going further
+## Notes
 
-- Real images: set `IMAGE_PROVIDER=fal` (adapter TBD) or `huggingface` + token.
-- `USE_MOCK_ADAPTERS=false` once real LLM / Stripe / email / calendar keys are set.
-- Custom domain: Railway **Settings → Networking → Custom Domain**, then point the
-  domain's DNS as instructed and update `NEXT_PUBLIC_APP_URL`.
+- Local dev is unchanged: `DIRECT_URL` in `.env` is set to the same value as
+  `DATABASE_URL` (local Postgres has no pooler).
+- Real images: `IMAGE_PROVIDER=huggingface` + `HUGGINGFACE_API_TOKEN`, or a paid
+  provider later.
+- `USE_MOCK_ADAPTERS=false` once real LLM / Stripe / email / calendar keys exist.
+- Custom domain (`viewrec.com`): Vercel **Settings → Domains**, follow the DNS
+  instructions, then update `NEXT_PUBLIC_APP_URL`.
