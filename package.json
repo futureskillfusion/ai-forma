@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev -H 0.0.0.0",
     "build": "prisma generate && next build",
-    "start": "next start -H 0.0.0.0",
+    "start": "prisma migrate deploy && next start -H 0.0.0.0",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:migrate": "prisma migrate dev",
@@ -13,7 +13,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:seed:prod": "tsx prisma/seed.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -45,5 +46,8 @@
     "tsx": "^4.19.2",
     "typescript": "^5",
     "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=22 <25"
   }
 }
