@@ -10,6 +10,7 @@ const Body = z.object({
   customerName: z.string().max(120).nullish(),
   customerEmail: z.string().email().nullish(),
   customerPhone: z.string().max(40).nullish(),
+  customerNote: z.string().max(4000).nullish(),
   imageModelChoice: z.string().max(60).optional(),
 });
 
@@ -30,6 +31,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         customerName: body.customerName ?? undefined,
         customerEmail: body.customerEmail ?? undefined,
         customerPhone: body.customerPhone ?? undefined,
+        customerNote: body.customerNote ?? undefined,
         imageModelChoice: isImageModel(body.imageModelChoice) ? body.imageModelChoice : undefined,
       },
     });

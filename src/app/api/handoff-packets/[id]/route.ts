@@ -22,7 +22,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         id: packet.id,
         summaryText: packet.summaryText,
         compiledAt: packet.compiledAt,
-        finalImageUrl: packet.finalVariation.imageUrl,
+        finalImageUrl: packet.finalVariation?.imageUrl ?? null,
         designer: packet.assignedDesigner,
         appointment: packet.appointment
           ? {

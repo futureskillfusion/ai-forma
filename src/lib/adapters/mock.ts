@@ -79,7 +79,16 @@ export const mockLlm: LlmAdapter = {
     };
   },
 
-  async compileHandoff({ description, contact, rounds, ranking, finalMatchPct }) {
+  async compileHandoff({
+    description,
+    contact,
+    rounds,
+    finalMatchPct,
+    picks,
+    customerNote,
+    attachmentCount,
+    selfServe,
+  }) {
     const iterations = rounds.length;
     const changes = rounds
       .map((r) => (r.changeRequest ? `• Round ${r.round}: ${r.changeRequest}` : null))
@@ -88,18 +97,29 @@ export const mockLlm: LlmAdapter = {
     const contactLine = contact
       ? [contact.name, contact.email, contact.phone].filter(Boolean).join(" · ")
       : "";
+
+    const picksLine =
+      picks && picks.length
+        ? `Customer picked ${picks.length} concept${picks.length === 1 ? "" : "s"}: ` +
+          picks.map((p, i) => `#${i + 1} at ${p.matchPct}% match`).join(", ") + "."
+        : null;
+
     const summaryText = [
       `Customer wants: ${description}`,
       contactLine ? `Contact: ${contactLine}` : null,
-      ranking && ranking.length > 1
-        ? `Customer's concept ranking: #1 chosen, ${ranking.length} concepts ordered by preference.`
-        : null,
+      attachmentCount ? `${attachmentCount} reference file(s) / sketch(es) attached.` : null,
+      selfServe
+        ? "The customer did not find an AI concept close enough and is sending their own details for the designer to work from."
+        : picksLine,
+      customerNote ? `\nCustomer's note to the designer:\n“${customerNote}”` : null,
       "",
-      `The concept was refined over ${iterations} generation round${iterations === 1 ? "" : "s"}, ` +
-        `ending at a ${finalMatchPct}% self-reported match. Key change requests along the way:`,
-      changes || "• (no free-text change requests recorded)",
+      selfServe
+        ? "Start from the customer's attachments and note above."
+        : `The concept was refined over ${iterations} generation round${iterations === 1 ? "" : "s"}, ` +
+          `ending at a ${finalMatchPct}% self-reported match on the lead pick. Key change requests:`,
+      selfServe ? null : changes || "• (no free-text change requests recorded)",
       "",
-      finalMatchPct >= 85
+      finalMatchPct >= 85 && !selfServe
         ? "The brief is tight — a short confirmation session should be enough to move to modelling."
         : "Some ambiguity remains — allow time to confirm proportions and details with the customer.",
     ]

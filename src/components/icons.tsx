@@ -23,4 +23,5 @@ export {
   TriangleAlert,
   Send,
   X,
+  Paperclip,
 } from "lucide-react";

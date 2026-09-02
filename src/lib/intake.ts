@@ -114,12 +114,30 @@ function buildPrompt(query: Query, round: number): string {
 }
 
 /** Compile the handoff packet once the customer confirms "close enough". */
-export async function compileHandoff(query: Query, finalVariationId: string) {
-  const variation = await db.variation.findFirst({
-    where: { id: finalVariationId, queryId: query.id },
-    include: { rating: true },
-  });
-  if (!variation) throw new HttpError(400, "Selected variation does not belong to this query");
+export interface CompileHandoffOpts {
+  /** Concept picks, lead pick first. Empty ⇒ self-serve. */
+  finalVariationIds?: string[];
+  selfServe?: boolean;
+  customerNote?: string | null;
+}
+
+export async function compileHandoff(query: Query, opts: CompileHandoffOpts) {
+  const pickIds = (opts.finalVariationIds ?? []).filter(Boolean);
+  const selfServe = opts.selfServe || pickIds.length === 0;
+
+  // Load & validate the picked variations (each with its rating).
+  const picks = pickIds.length
+    ? await db.variation.findMany({
+        where: { id: { in: pickIds }, queryId: query.id },
+        include: { rating: true },
+      })
+    : [];
+  if (pickIds.length && picks.length !== pickIds.length) {
+    throw new HttpError(400, "A picked concept does not belong to this query");
+  }
+  // Keep the customer's order.
+  picks.sort((a, b) => pickIds.indexOf(a.id) - pickIds.indexOf(b.id));
+  const lead = picks[0] ?? null;
 
   const ratings = await db.rating.findMany({
     where: { variation: { queryId: query.id } },
@@ -131,19 +149,31 @@ export async function compileHandoff(query: Query, finalVariationId: string) {
     overallMatchPct: r.overallMatchPct,
     changeRequest: r.changeRequestText,
   }));
-  const finalMatchPct = variation.rating?.overallMatchPct ?? rounds.at(-1)?.overallMatchPct ?? 70;
+  const finalMatchPct =
+    lead?.rating?.overallMatchPct ?? rounds.at(-1)?.overallMatchPct ?? (selfServe ? 0 : 70);
 
-  const ranking = Array.isArray(query.conceptRankingJson)
-    ? (query.conceptRankingJson as string[])
-    : [];
+  const attachments = await db.attachment.findMany({
+    where: { queryId: query.id },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const pickSummaries = picks.map((v, i) => ({
+    label: `Concept (round ${v.roundNumber})`,
+    matchPct: v.rating?.overallMatchPct ?? finalMatchPct,
+    variationId: v.id,
+    order: i + 1,
+  }));
 
   const summary = await llm.compileHandoff({
     description: query.descriptionText,
     model: query.llmChoice,
     contact: { name: query.customerName, email: query.customerEmail, phone: query.customerPhone },
     rounds,
-    ranking,
     finalMatchPct,
+    picks: pickSummaries.map((p) => ({ label: p.label, matchPct: p.matchPct })),
+    customerNote: opts.customerNote ?? query.customerNote,
+    attachmentCount: attachments.length,
+    selfServe,
   });
   await logUsage({
     tenantId: query.tenantId,
@@ -159,10 +189,9 @@ export async function compileHandoff(query: Query, finalVariationId: string) {
     descriptionLength: query.descriptionText.trim().length,
     hasContact: !!(query.customerEmail || query.customerPhone),
     roundCount: new Set(ratings.map((r) => r.variation.roundNumber)).size || 1,
-    rankedConcepts: ranking.length > 1,
+    rankedConcepts: picks.length > 1,
   });
 
-  // Round-robin-ish assignment: pick the designer with the fewest open packets.
   const designers = await db.tenantUser.findMany({
     where: { tenantId: query.tenantId, role: "designer" },
     include: { _count: { select: { assignedPackets: true } } },
@@ -171,34 +200,37 @@ export async function compileHandoff(query: Query, finalVariationId: string) {
 
   const history = {
     description: query.descriptionText,
-    contact: {
-      name: query.customerName,
-      email: query.customerEmail,
-      phone: query.customerPhone,
-    },
+    contact: { name: query.customerName, email: query.customerEmail, phone: query.customerPhone },
     llmChoice: query.llmChoice,
     imageModelChoice: query.imageModelChoice,
-    conceptRanking: ranking,
+    picks: pickSummaries,
+    selfServe,
+    customerNote: opts.customerNote ?? query.customerNote,
+    attachments: attachments.map((a) => ({ id: a.id, kind: a.kind, mimeType: a.mimeType, label: a.label })),
     confidenceTier: tier,
     finalMatchPct,
     rounds,
   };
 
+  await db.query.update({
+    where: { id: query.id },
+    data: {
+      selfServe,
+      customerNote: opts.customerNote ?? query.customerNote ?? undefined,
+      conceptRankingJson: pickSummaries.map((p) => ({ variationId: p.variationId, matchPct: p.matchPct })),
+    },
+  });
+
+  const data = {
+    finalVariationId: lead?.id ?? null,
+    summaryText: summary.summaryText,
+    requirementHistoryJson: history,
+    assignedDesignerId: assignee?.id ?? null,
+  };
   const packet = await db.handoffPacket.upsert({
     where: { queryId: query.id },
-    create: {
-      queryId: query.id,
-      finalVariationId: variation.id,
-      summaryText: summary.summaryText,
-      requirementHistoryJson: history,
-      assignedDesignerId: assignee?.id ?? null,
-    },
-    update: {
-      finalVariationId: variation.id,
-      summaryText: summary.summaryText,
-      requirementHistoryJson: history,
-      assignedDesignerId: assignee?.id ?? null,
-    },
+    create: { queryId: query.id, ...data },
+    update: data,
   });
 
   await db.query.update({ where: { id: query.id }, data: { status: "handed_off" } });

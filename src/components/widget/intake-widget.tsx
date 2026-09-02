@@ -12,10 +12,13 @@ import {
   ArrowRight,
   Send,
   X,
+  Paperclip,
+  Pencil,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { dateTime } from "@/lib/format";
 import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, type ModelOption } from "@/lib/models";
+import { DrawingCanvas } from "./drawing-canvas";
 
 type Step = "consent" | "describe" | "loading" | "review" | "handoff" | "booked" | "escalated";
 
@@ -29,6 +32,13 @@ interface Variation {
 interface Slot {
   start: string;
   durationMinutes: number;
+}
+interface Attachment {
+  id: string;
+  url: string;
+  kind: "reference" | "drawing" | "self_serve";
+  mimeType: string;
+  label?: string | null;
 }
 
 // Chat transcript on the review step.
@@ -70,14 +80,21 @@ export function IntakeWidget({
   const [round, setRound] = useState(0);
   const [maxRounds, setMaxRounds] = useState(5);
 
-  // ── review step: chat + bucket ────────────────────────────────────────────
+  // ── review step: chat + picks ─────────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [matchPct, setMatchPct] = useState(70);
   const [assistantTyping, setAssistantTyping] = useState(false);
   const [roundsExhausted, setRoundsExhausted] = useState(false);
-  const [bucketId, setBucketId] = useState<string | null>(null); // the concept the customer picked
+  // Multiple picks, each capturing the match % set when it was added.
+  const [picks, setPicks] = useState<{ id: string; matchPct: number }[]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [designerNote, setDesignerNote] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [showDrawing, setShowDrawing] = useState(false);
+  const [selfServeOpen, setSelfServeOpen] = useState(false);
+  const [selfServeText, setSelfServeText] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const [packet, setPacket] = useState<{ id: string; summaryText: string; confidenceTier: string } | null>(null);
@@ -113,10 +130,57 @@ export function IntakeWidget({
     () => variations.filter((v) => v.roundNumber === round),
     [variations, round],
   );
-  const bucketVariation = variationById(bucketId);
-  const toggleBucket = (id: string) => setBucketId((cur) => (cur === id ? null : id));
+  const isPicked = (id: string) => picks.some((p) => p.id === id);
+  const togglePick = (id: string) =>
+    setPicks((cur) =>
+      cur.some((p) => p.id === id)
+        ? cur.filter((p) => p.id !== id)
+        : [...cur, { id, matchPct }],
+    );
+  const removePick = (id: string) => setPicks((cur) => cur.filter((p) => p.id !== id));
 
   const pushMsg = useCallback((m: ChatMsg) => setMessages((prev) => [...prev, m]), []);
+
+  // ── attachments (reference uploads + sketches) ────────────────────────────
+  async function uploadDataUrl(dataUrl: string, kind: Attachment["kind"], label?: string) {
+    if (!queryId) return;
+    const mimeType = dataUrl.slice(5, dataUrl.indexOf(";")) || "image/png";
+    try {
+      const res = await api(`/api/queries/${queryId}/attachments`, {
+        method: "POST",
+        authed: true,
+        body: JSON.stringify({ kind, dataUrl, mimeType, label }),
+      });
+      setAttachments((a) => [...a, res.attachment]);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  async function onFilesPicked(files: FileList | null) {
+    if (!files) return;
+    for (const file of Array.from(files).slice(0, 6)) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > 2_600_000) {
+        setError("Each reference image must be under 2.5 MB.");
+        continue;
+      }
+      const dataUrl: string = await new Promise((resolve) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.readAsDataURL(file);
+      });
+      await uploadDataUrl(dataUrl, "reference", file.name);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+  async function removeAttachment(id: string) {
+    setAttachments((a) => a.filter((x) => x.id !== id));
+    if (queryId)
+      await fetch(`/api/queries/${queryId}/attachments?attachmentId=${id}`, {
+        method: "DELETE",
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+      }).catch(() => undefined);
+  }
 
   // Auto-scroll the transcript to the newest message.
   useEffect(() => {
@@ -211,14 +275,14 @@ export function IntakeWidget({
   }
 
   /** Record the customer's feedback on a concept (rating + free text). */
-  async function recordFeedback(variationId: string, feedback: string) {
+  async function recordFeedback(variationId: string, feedback: string, pct = matchPct) {
     await api(`/api/variations/${variationId}/ratings`, {
       method: "POST",
       authed: true,
       body: JSON.stringify({
-        overallMatchPct: matchPct,
+        overallMatchPct: pct,
         changeRequestText: feedback || undefined,
-        ranking: bucketId ? [bucketId] : [variationId],
+        ranking: [variationId],
       }),
     });
   }
@@ -231,7 +295,7 @@ export function IntakeWidget({
     setInput("");
     pushMsg({ id: nextMsgId(), role: "user", kind: "text", text });
 
-    const target = bucketId ?? latestRoundVariations[0]?.id ?? null;
+    const target = picks[0]?.id ?? latestRoundVariations[0]?.id ?? null;
 
     if (round >= maxRounds) {
       setRoundsExhausted(true);
@@ -239,7 +303,7 @@ export function IntakeWidget({
         id: nextMsgId(),
         role: "assistant",
         kind: "text",
-        text: `That's the last refinement I can run. I've saved everything — add your favourite concept to your pick and I'll send it, with the full conversation, to a ${brandName} designer.`,
+        text: `That's the last refinement I can run. Add the concepts you like to your picks on the right — or send your own details — and I'll hand it to a ${brandName} designer with the full conversation.`,
       });
       if (target) await recordFeedback(target, text).catch(() => undefined);
       return;
@@ -258,11 +322,10 @@ export function IntakeWidget({
     }
   }
 
-  /** Continue to the handoff step with the concept in the bucket. */
-  async function proceedWithBucket() {
-    const pick = bucketId ?? latestRoundVariations[0]?.id ?? null;
-    if (!pick) {
-      setError("Add a concept to your pick first.");
+  /** Continue to the handoff step with the picked concept(s). */
+  async function proceedWithPicks() {
+    if (picks.length === 0) {
+      setError("Add at least one concept to your picks.");
       return;
     }
     setError(null);
@@ -270,11 +333,42 @@ export function IntakeWidget({
     setStep("loading");
     setLoadingLabel("Compiling your brief…");
     try {
-      await recordFeedback(pick, "");
+      for (const p of picks) await recordFeedback(p.id, "", p.matchPct);
       const data = await api(`/api/queries/${queryId}/handoff`, {
         method: "POST",
         authed: true,
-        body: JSON.stringify({ finalVariationId: pick }),
+        body: JSON.stringify({
+          finalVariationIds: picks.map((p) => p.id),
+          customerNote: designerNote.trim() || undefined,
+        }),
+      });
+      setPacket(data.packet);
+      setSlots(data.booking.slots ?? []);
+      setStep("handoff");
+    } catch (e) {
+      setError((e as Error).message);
+      setStep("review");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Skip the AI concepts — send the customer's own details + files. */
+  async function proceedSelfServe() {
+    const note = [selfServeText.trim(), designerNote.trim()].filter(Boolean).join("\n\n");
+    if (!note && attachments.length === 0) {
+      setError("Add a message or upload a file so the designer has something to work from.");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    setStep("loading");
+    setLoadingLabel("Sending your details…");
+    try {
+      const data = await api(`/api/queries/${queryId}/handoff`, {
+        method: "POST",
+        authed: true,
+        body: JSON.stringify({ selfServe: true, customerNote: note || undefined }),
       });
       setPacket(data.packet);
       setSlots(data.booking.slots ?? []);
@@ -465,8 +559,8 @@ export function IntakeWidget({
                             draggable
                             onDragStart={() => setDragId(id)}
                             onDragEnd={() => setDragId(null)}
-                            onPick={() => toggleBucket(id)}
-                            picked={bucketId === id}
+                            onPick={() => togglePick(id)}
+                            picked={isPicked(id)}
                           />
                         );
                       })}
@@ -484,9 +578,80 @@ export function IntakeWidget({
               )}
             </div>
 
+            {showDrawing && (
+              <div className="mt-3">
+                <DrawingCanvas
+                  brandColor={primaryColor}
+                  onCancel={() => setShowDrawing(false)}
+                  onSave={async (dataUrl) => {
+                    await uploadDataUrl(dataUrl, "drawing", "Sketch");
+                    setShowDrawing(false);
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Attachment strip */}
+            {attachments.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {attachments.map((a) => (
+                  <span key={a.id} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={a.url}
+                      alt={a.label ?? a.kind}
+                      className="h-14 w-14 rounded-md border border-[var(--color-border)] object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void removeAttachment(a.id)}
+                      aria-label="Remove attachment"
+                      className="absolute -right-1.5 -top-1.5 grid h-4 w-4 place-items-center rounded-full bg-[var(--color-foreground)] text-white cursor-pointer"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                    <span className="absolute inset-x-0 bottom-0 truncate rounded-b-md bg-black/50 px-1 text-[8px] text-white">
+                      {a.kind === "drawing" ? "sketch" : "reference"}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            )}
+
             {/* Composer */}
             <div className="mt-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-2">
               <div className="flex items-end gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  onChange={(e) => void onFilesPicked(e.target.files)}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={roundsExhausted}
+                  aria-label="Attach a reference image"
+                  title="Attach a reference image"
+                  className="grid h-10 w-9 shrink-0 place-items-center rounded-md text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] disabled:opacity-40 cursor-pointer"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDrawing((s) => !s)}
+                  disabled={roundsExhausted}
+                  aria-label="Draw a sketch"
+                  title="Draw a sketch"
+                  className={cn(
+                    "grid h-10 w-9 shrink-0 place-items-center rounded-md hover:bg-[var(--color-muted)] disabled:opacity-40 cursor-pointer",
+                    showDrawing ? "text-[var(--brand)]" : "text-[var(--color-muted-foreground)]",
+                  )}
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
                 <textarea
                   rows={1}
                   value={input}
@@ -499,9 +664,7 @@ export function IntakeWidget({
                     }
                   }}
                   placeholder={
-                    roundsExhausted
-                      ? "Add your favourite concept to your pick, then continue"
-                      : "Tell me what to change…"
+                    roundsExhausted ? "Rounds used — add picks or send your own details" : "Tell me what to change… (attach a reference if you have one)"
                   }
                   className="max-h-32 min-h-[40px] flex-1 resize-none rounded-md border border-[var(--color-input)] bg-[var(--color-card)] px-3 py-2 text-sm outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ring)] disabled:opacity-50"
                 />
@@ -519,14 +682,14 @@ export function IntakeWidget({
             </div>
           </div>
 
-          {/* ── Bucket sidebar ──────────────────────────────────────────── */}
-          <aside className="shrink-0 lg:w-72">
+          {/* ── Picks sidebar ───────────────────────────────────────────── */}
+          <aside className="shrink-0 space-y-3 lg:w-80">
             <div
               onDragOver={(e) => {
                 if (dragId) e.preventDefault();
               }}
               onDrop={() => {
-                if (dragId) setBucketId(dragId);
+                if (dragId) togglePick(dragId);
                 setDragId(null);
               }}
               className={cn(
@@ -537,48 +700,63 @@ export function IntakeWidget({
               )}
             >
               <p className="text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
-                Your pick
+                Your picks{picks.length > 0 ? ` (${picks.length})` : ""}
               </p>
 
-              {bucketVariation ? (
+              {picks.length > 0 ? (
                 <div className="mt-2 space-y-2">
-                  <div className="overflow-hidden rounded-lg border-2 border-[var(--brand)]">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={bucketVariation.imageUrl}
-                      alt="Selected concept"
-                      className="aspect-square w-full object-cover"
+                  {picks.map((p, i) => {
+                    const v = variationById(p.id);
+                    if (!v) return null;
+                    return (
+                      <div
+                        key={p.id}
+                        className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] p-1.5"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={v.imageUrl} alt="" className="h-12 w-12 shrink-0 rounded object-cover" />
+                        <span className="min-w-0 flex-1 text-xs">
+                          <span className="font-semibold">Pick {i + 1}</span>
+                          <span className="block text-[var(--color-muted-foreground)]">{p.matchPct}% match</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removePick(p.id)}
+                          aria-label="Remove pick"
+                          className="grid h-6 w-6 shrink-0 place-items-center rounded text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] cursor-pointer"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  <label className="block pt-1 text-xs font-semibold">
+                    Add a note for the designer (optional)
+                    <textarea
+                      rows={2}
+                      value={designerNote}
+                      onChange={(e) => setDesignerNote(e.target.value)}
+                      placeholder="e.g. I like #1's shape but #2's colour."
+                      className="mt-1 w-full resize-none rounded-md border border-[var(--color-input)] bg-[var(--color-card)] px-2 py-1.5 text-xs font-normal outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ring)]"
                     />
-                  </div>
-                  {bucketVariation.feasibilityFlag && bucketVariation.feasibilityNotes && (
-                    <p className="rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
-                      {bucketVariation.feasibilityNotes}
-                    </p>
-                  )}
-                  <Button className="w-full" style={brand} disabled={busy} onClick={proceedWithBucket}>
-                    Continue with this <ArrowRight className="h-4 w-4" />
+                  </label>
+
+                  <Button className="w-full" style={brand} disabled={busy} onClick={proceedWithPicks}>
+                    Continue with {picks.length} pick{picks.length === 1 ? "" : "s"} <ArrowRight className="h-4 w-4" />
                   </Button>
-                  <button
-                    type="button"
-                    onClick={() => setBucketId(null)}
-                    className="flex w-full items-center justify-center gap-1 text-xs font-semibold text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)] cursor-pointer"
-                  >
-                    <X className="h-3 w-3" /> Remove from pick
-                  </button>
                 </div>
               ) : (
                 <p className="mt-2 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
-                  When a concept matches your idea, <span className="font-semibold">click it</span> or
-                  <span className="font-semibold"> drag it here</span>. You can remove it again any time.
+                  Click a concept (or drag it here) to add it to your picks. You can add more than one and
+                  note what you like about each.
                 </p>
               )}
 
-              {/* Overall match — lives with the pick */}
+              {/* Match slider — captured when you add the next pick */}
               <div className="mt-3 border-t border-[var(--color-border)] pt-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[var(--color-foreground)]">
-                    How close is your #1 pick?
-                  </span>
+                  <span className="text-xs font-semibold">How close is it?</span>
                   <span className="text-xs font-bold tabular-nums" style={{ color: primaryColor }}>
                     {matchPct}%
                   </span>
@@ -593,7 +771,54 @@ export function IntakeWidget({
                   onChange={(e) => setMatchPct(Number(e.target.value))}
                   className="mt-1.5 w-full cursor-pointer accent-[var(--brand)]"
                 />
+                <p className="mt-1 text-[10px] text-[var(--color-muted-foreground)]">
+                  Set this, then add a concept — it's saved with that pick.
+                </p>
               </div>
+            </div>
+
+            {/* Self-serve fallback */}
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-3">
+              {!selfServeOpen ? (
+                <button
+                  type="button"
+                  onClick={() => setSelfServeOpen(true)}
+                  className="w-full text-left text-xs font-semibold text-[var(--color-foreground)] hover:underline cursor-pointer"
+                >
+                  Not quite right? Send your own details instead →
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+                    Send your own details
+                  </p>
+                  <textarea
+                    rows={3}
+                    value={selfServeText}
+                    onChange={(e) => setSelfServeText(e.target.value)}
+                    placeholder="Describe exactly what you need — measurements, materials, references, anything the designer should know."
+                    className="w-full resize-none rounded-md border border-[var(--color-input)] bg-[var(--color-card)] px-2 py-1.5 text-xs outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ring)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-[var(--color-input)] px-2 py-2 text-xs font-semibold text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)] cursor-pointer"
+                  >
+                    <Paperclip className="h-3.5 w-3.5" /> Upload your files
+                    {attachments.length > 0 ? ` (${attachments.length})` : ""}
+                  </button>
+                  <Button className="w-full" style={brand} disabled={busy} onClick={proceedSelfServe}>
+                    Send to a designer <ArrowRight className="h-4 w-4" />
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setSelfServeOpen(false)}
+                    className="w-full text-center text-[10px] text-[var(--color-muted-foreground)] hover:underline cursor-pointer"
+                  >
+                    Keep refining with AI
+                  </button>
+                </div>
+              )}
             </div>
           </aside>
         </section>

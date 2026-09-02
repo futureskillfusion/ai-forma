@@ -37,6 +37,10 @@ export interface LlmAdapter {
     }>;
     ranking?: string[];
     finalMatchPct: number;
+    picks?: Array<{ label: string; matchPct: number }>;
+    customerNote?: string | null;
+    attachmentCount?: number;
+    selfServe?: boolean;
   }): Promise<{ summaryText: string; tokens: number }>;
 }
 

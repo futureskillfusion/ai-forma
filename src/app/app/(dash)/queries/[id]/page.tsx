@@ -11,6 +11,8 @@ import { imageModelLabel, llmModelLabel } from "@/lib/models";
 
 export const dynamic = "force-dynamic";
 
+type PickEntry = { variationId: string; matchPct: number };
+
 export default async function QueryDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await pageRequireTenantUser();
   const { id } = await params;
@@ -20,6 +22,7 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
     where: { id, tenantId: session.tenantId },
     include: {
       variations: { orderBy: [{ roundNumber: "asc" }, { createdAt: "asc" }], include: { rating: true } },
+      attachments: { orderBy: { createdAt: "asc" } },
       handoffPacket: {
         include: { assignedDesigner: { select: { name: true } }, appointment: true, finalVariation: true },
       },
@@ -28,19 +31,28 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
   if (!query) notFound();
 
   const rounds = [...new Set(query.variations.map((v) => v.roundNumber))].sort((a, b) => a - b);
+  const conceptLabel = (variationId: string) => {
+    const v = query.variations.find((x) => x.id === variationId);
+    if (!v) return "Concept";
+    const nth = query.variations.filter((x) => x.roundNumber === v.roundNumber).indexOf(v) + 1;
+    return `Concept ${nth} · round ${v.roundNumber}`;
+  };
 
-  // Concept ranking → human labels ("Concept 2 (round 3)")
-  const rankingIds = Array.isArray(query.conceptRankingJson)
-    ? (query.conceptRankingJson as string[])
+  // conceptRankingJson is now [{ variationId, matchPct }] (older rows: string[]).
+  const raw = query.conceptRankingJson;
+  const picks: PickEntry[] = Array.isArray(raw)
+    ? raw.map((r) =>
+        typeof r === "string"
+          ? { variationId: r, matchPct: 0 }
+          : (r as PickEntry),
+      )
     : [];
-  const rankingList = rankingIds
-    .map((id) => {
-      const v = query.variations.find((x) => x.id === id);
-      if (!v) return null;
-      const nth = query.variations.filter((x) => x.roundNumber === v.roundNumber).indexOf(v) + 1;
-      return `Concept ${nth} (round ${v.roundNumber})`;
-    })
-    .filter((x): x is string => x !== null);
+  const pickVariations = picks
+    .map((p) => ({ ...p, v: query.variations.find((x) => x.id === p.variationId) }))
+    .filter((p) => p.v);
+
+  const hasCustomerInputs =
+    pickVariations.length > 0 || !!query.customerNote || query.selfServe || query.attachments.length > 0;
 
   return (
     <>
@@ -58,6 +70,81 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
+          {/* ── Customer's picks & inputs ─────────────────────────────── */}
+          {hasCustomerInputs && (
+            <Card className="border-[var(--color-primary)]/30 bg-blue-50/40">
+              <CardHeader>
+                <CardTitle>What the customer chose &amp; sent</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {query.selfServe && (
+                  <p className="rounded-md bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+                    The customer didn&apos;t find an AI concept close enough and sent their own details for the designer to work from.
+                  </p>
+                )}
+
+                {pickVariations.length > 0 && (
+                  <div>
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+                      Picked concepts ({pickVariations.length})
+                    </p>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {pickVariations.map(({ variationId, matchPct, v }, i) => (
+                        <div key={variationId} className="space-y-1">
+                          <div className="relative overflow-hidden rounded-md border-2 border-[var(--color-primary)]">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={v!.imageUrl} alt="" className="aspect-square w-full object-cover" />
+                            <span className="absolute left-1 top-1 rounded bg-[var(--color-primary)] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                              Pick {i + 1}
+                            </span>
+                          </div>
+                          <p className="text-xs font-semibold">{matchPct}% match</p>
+                          <p className="text-[10px] text-[var(--color-muted-foreground)]">{conceptLabel(variationId)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {query.customerNote && (
+                  <div>
+                    <p className="mb-1 text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+                      Customer&apos;s note to the designer
+                    </p>
+                    <p className="whitespace-pre-wrap rounded-md bg-[var(--color-card)] p-3 text-sm italic">
+                      “{query.customerNote}”
+                    </p>
+                  </div>
+                )}
+
+                {query.attachments.length > 0 && (
+                  <div>
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+                      Uploads &amp; sketches ({query.attachments.length})
+                    </p>
+                    <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                      {query.attachments.map((a) => (
+                        <a
+                          key={a.id}
+                          href={a.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="group relative block overflow-hidden rounded-md border border-[var(--color-border)]"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={a.url} alt={a.label ?? a.kind} className="aspect-square w-full object-cover" />
+                          <span className="absolute inset-x-0 bottom-0 truncate bg-black/55 px-1 py-0.5 text-[9px] text-white">
+                            {a.kind === "drawing" ? "sketch" : a.kind === "self_serve" ? "file" : "reference"}
+                          </span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {query.handoffPacket && (
             <Card className="border-[var(--color-success)]/40 bg-emerald-50/40">
               <CardHeader>
@@ -109,9 +196,6 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
                         {v.rating && (
                           <div className="rounded-md bg-[var(--color-muted)]/60 p-2 text-xs">
                             <p className="font-bold">{v.rating.overallMatchPct}% match</p>
-                            <p className="text-[var(--color-muted-foreground)]">
-                              shape {v.rating.shapeScore} · size {v.rating.sizeScore} · material {v.rating.materialScore}
-                            </p>
                             {v.rating.changeRequestText && (
                               <p className="mt-1 italic">“{v.rating.changeRequestText}”</p>
                             )}
@@ -124,7 +208,7 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
             </Card>
           ))}
 
-          {query.variations.length === 0 && (
+          {query.variations.length === 0 && !query.selfServe && (
             <Card>
               <CardContent className="py-8 text-center text-sm text-[var(--color-muted-foreground)]">
                 No image variations generated yet.
@@ -142,12 +226,8 @@ export default async function QueryDetailPage({ params }: { params: Promise<{ id
               <Field k="Description" v={query.descriptionText || "—"} />
               <Field k="Image model" v={imageModelLabel(query.imageModelChoice)} />
               <Field k="Assistant model" v={llmModelLabel(query.llmChoice)} />
-              {rankingList.length > 0 && (
-                <Field k="Concept ranking" v={rankingList.map((r, i) => `#${i + 1} ${r}`).join("  ·  ")} />
-              )}
+              <Field k="Route" v={query.selfServe ? "Customer-supplied details" : "AI concepts"} />
               <Field k="Match threshold" v={`${query.matchThreshold}%`} />
-              {query.dimensions && <Field k="Dimensions (legacy)" v={query.dimensions} />}
-              {query.materialPreference && <Field k="Material (legacy)" v={query.materialPreference} />}
               <hr className="border-[var(--color-border)]" />
               <Field k="Consent" v={query.consentConfirmed ? `Confirmed ${dateTime(query.consentConfirmedAt!)}` : "Not confirmed"} />
               <Field k="Customer name" v={query.customerName ?? "—"} />

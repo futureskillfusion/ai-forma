@@ -169,21 +169,21 @@ model AuditLog {
 // A prospective manufacturer asks the platform owner for an account.
 // Super admin reviews and either provisions a Tenant (approve) or declines.
 model AccessRequest {
-  id                    String              @id @default(uuid())
-  businessName          String
-  contactName           String
-  email                 String
-  phone                 String?
-  website               String?
+  id                     String              @id @default(uuid())
+  businessName           String
+  contactName            String
+  email                  String
+  phone                  String?
+  website                String?
   expectedMonthlyQueries Int?
-  message               String?
-  status                AccessRequestStatus @default(pending)
+  message                String?
+  status                 AccessRequestStatus @default(pending)
   // Set when approved and a Tenant is provisioned from this request.
-  tenantId              String?
-  reviewedByEmail       String?
-  reviewedAt            DateTime?
-  declineReason         String?
-  createdAt             DateTime            @default(now())
+  tenantId               String?
+  reviewedByEmail        String?
+  reviewedAt             DateTime?
+  declineReason          String?
+  createdAt              DateTime            @default(now())
 
   @@index([status, createdAt])
   @@index([email])
@@ -202,7 +202,7 @@ model Tenant {
   status         TenantStatus @default(active)
 
   // Embed: the client pastes a <script>/iframe using this key on their own site.
-  embedKey       String  @unique
+  embedKey            String   @unique
   embedAllowedOrigins String[] @default([]) // e.g. ["https://3d-2u.com"]
 
   // Branding / white-label (within super-admin-allowed limits)
@@ -217,27 +217,27 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users         TenantUser[]
-  queries       Query[]
-  usageLogs     UsageLog[]
-  planLimit     PlanLimit?
-  ndaRequests   NdaRequest[]
+  users       TenantUser[]
+  queries     Query[]
+  usageLogs   UsageLog[]
+  planLimit   PlanLimit?
+  ndaRequests NdaRequest[]
 
   @@index([status])
 }
 
 model TenantUser {
-  id           String   @id @default(uuid())
-  tenantId     String
-  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  role         UserRole
-  name         String
-  email        String
-  passwordHash String
+  id                   String   @id @default(uuid())
+  tenantId             String
+  tenant               Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  role                 UserRole
+  name                 String
+  email                String
+  passwordHash         String
   // External calendar connection (Calendly / Cal.com) — one per designer.
   calendarConnectionId String?
   availabilityJson     Json?
-  createdAt    DateTime @default(now())
+  createdAt            DateTime @default(now())
 
   assignedPackets HandoffPacket[]
   appointments    Appointment[]
@@ -251,18 +251,18 @@ model TenantUser {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model PlanLimit {
-  id                   String         @id @default(uuid())
+  id                    String         @id @default(uuid())
   // Null tenantId => this row is the default for `planTier`.
-  tenantId             String?        @unique
-  tenant               Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  planTier             PlanTier
-  maxQueriesPerMonth   Int
+  tenantId              String?        @unique
+  tenant                Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planTier              PlanTier
+  maxQueriesPerMonth    Int
   maxRegenerationRounds Int
-  imageModelTier       ImageModelTier @default(standard)
-  designerSeats        Int
-  overagePolicy        OveragePolicy  @default(hard_cutoff)
+  imageModelTier        ImageModelTier @default(standard)
+  designerSeats         Int
+  overagePolicy         OveragePolicy  @default(hard_cutoff)
   // Cost ceiling used to flag `over_cap`; compared to summed UsageLog cost per month.
-  monthlyCostCapUsd    Decimal        @db.Decimal(10, 2)
+  monthlyCostCapUsd     Decimal        @db.Decimal(10, 2)
 
   @@index([planTier])
 }
@@ -297,66 +297,91 @@ model Query {
   llmChoice        String?
   imageModelChoice String?
 
-  // Ordered variation ids from the last round the customer ranked
-  // (drag-and-drop preference on the review step). [topPick, secondPick, ...]
+  // The customer's picked concepts for this session, each with the match %
+  // they set: [{ variationId, matchPct }]. (Legacy name kept.)
   conceptRankingJson Json?
 
-  status      QueryStatus @default(describing)
-  matchThreshold Int      @default(80) // % — configurable per query, seeded from plan
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  // Optional free-text note the customer wants passed to the designer,
+  // and whether they bypassed the AI concepts entirely (self-serve).
+  customerNote String?
+  selfServe    Boolean @default(false)
+
+  status         QueryStatus @default(describing)
+  matchThreshold Int         @default(80) // % — configurable per query, seeded from plan
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
 
   variations    Variation[]
   handoffPacket HandoffPacket?
   usageLogs     UsageLog[]
   jobs          Job[]
   ndaRequest    NdaRequest?
+  attachments   Attachment[]
 
   @@index([tenantId, status])
   @@index([tenantId, createdAt])
 }
 
 model Variation {
-  id             String   @id @default(uuid())
-  queryId        String
-  query          Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
-  roundNumber    Int
-  imageUrl       String
+  id               String   @id @default(uuid())
+  queryId          String
+  query            Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  roundNumber      Int
+  imageUrl         String
   generationPrompt String
   // Feasibility check (LLM). Advisory — flagged designs still proceed but the
   // note travels into the handoff packet for the human designer.
-  feasibilityFlag  Boolean @default(false)
+  feasibilityFlag  Boolean  @default(false)
   feasibilityNotes String?
-  createdAt      DateTime @default(now())
+  createdAt        DateTime @default(now())
 
-  rating           Rating?
-  finalForPacket   HandoffPacket? @relation("FinalVariation")
+  rating         Rating?
+  finalForPacket HandoffPacket? @relation("FinalVariation")
 
   @@index([queryId, roundNumber])
 }
 
+enum AttachmentKind {
+  reference // a reference image the customer uploaded in chat
+  drawing // a sketch made in the widget's drawing canvas
+  self_serve // a file the customer attached when sending their own details
+}
+
+model Attachment {
+  id        String         @id @default(uuid())
+  queryId   String
+  query     Query          @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  kind      AttachmentKind
+  url       String         @db.Text // data URL (dev) / storage key (prod)
+  mimeType  String
+  label     String?
+  createdAt DateTime       @default(now())
+
+  @@index([queryId])
+}
+
 model Rating {
-  id             String        @id @default(uuid())
-  variationId    String        @unique
-  variation      Variation     @relation(fields: [variationId], references: [id], onDelete: Cascade)
-  overallMatchPct Int
-  shapeScore     ShapeScore
-  sizeScore      SizeScore
-  materialScore  MaterialScore
-  annotationData Json? // { markups: [{ x, y, note }] }
+  id                String        @id @default(uuid())
+  variationId       String        @unique
+  variation         Variation     @relation(fields: [variationId], references: [id], onDelete: Cascade)
+  overallMatchPct   Int
+  shapeScore        ShapeScore
+  sizeScore         SizeScore
+  materialScore     MaterialScore
+  annotationData    Json? // { markups: [{ x, y, note }] }
   changeRequestText String?
-  createdAt      DateTime      @default(now())
+  createdAt         DateTime      @default(now())
 }
 
 model HandoffPacket {
-  id              String   @id @default(uuid())
-  queryId         String   @unique
-  query           Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
-  finalVariationId String  @unique
-  finalVariation  Variation @relation("FinalVariation", fields: [finalVariationId], references: [id])
-  summaryText     String   // AI-generated natural-language brief for the designer
+  id                     String     @id @default(uuid())
+  queryId                String     @unique
+  query                  Query      @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  finalVariationId       String?    @unique
+  finalVariation         Variation? @relation("FinalVariation", fields: [finalVariationId], references: [id])
+  summaryText            String // AI-generated natural-language brief for the designer
   requirementHistoryJson Json // full spec + every round's rating snapshot
-  compiledAt      DateTime @default(now())
+  compiledAt             DateTime   @default(now())
 
   assignedDesignerId String?
   assignedDesigner   TenantUser? @relation(fields: [assignedDesignerId], references: [id])
@@ -365,16 +390,16 @@ model HandoffPacket {
 }
 
 model Appointment {
-  id              String   @id @default(uuid())
-  handoffPacketId String   @unique
-  handoffPacket   HandoffPacket @relation(fields: [handoffPacketId], references: [id], onDelete: Cascade)
-  designerId      String
-  designer        TenantUser @relation(fields: [designerId], references: [id])
-  scheduledAt     DateTime
-  durationMinutes Int
+  id                      String         @id @default(uuid())
+  handoffPacketId         String         @unique
+  handoffPacket           HandoffPacket  @relation(fields: [handoffPacketId], references: [id], onDelete: Cascade)
+  designerId              String
+  designer                TenantUser     @relation(fields: [designerId], references: [id])
+  scheduledAt             DateTime
+  durationMinutes         Int
   externalCalendarEventId String?
-  confidenceTier  ConfidenceTier
-  createdAt       DateTime @default(now())
+  confidenceTier          ConfidenceTier
+  createdAt               DateTime       @default(now())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -382,15 +407,15 @@ model Appointment {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Job {
-  id        String    @id @default(uuid())
-  queryId   String
-  query     Query     @relation(fields: [queryId], references: [id], onDelete: Cascade)
-  type      JobType
-  status    JobStatus @default(queued)
+  id         String    @id @default(uuid())
+  queryId    String
+  query      Query     @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  type       JobType
+  status     JobStatus @default(queued)
   resultJson Json?
-  error     String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  error      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([queryId, type])
 }
@@ -400,15 +425,15 @@ model Job {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model NdaRequest {
-  id           String    @id @default(uuid())
-  tenantId     String
-  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  queryId      String    @unique
-  query        Query     @relation(fields: [queryId], references: [id], onDelete: Cascade)
-  status       NdaStatus @default(requested)
+  id             String    @id @default(uuid())
+  tenantId       String
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  queryId        String    @unique
+  query          Query     @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  status         NdaStatus @default(requested)
   requesterEmail String?
-  note         String?
-  createdAt    DateTime  @default(now())
+  note           String?
+  createdAt      DateTime  @default(now())
 
   @@index([tenantId, status])
 }
