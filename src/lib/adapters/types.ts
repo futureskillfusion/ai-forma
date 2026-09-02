@@ -13,6 +13,8 @@ export interface ImageGenAdapter {
     /** Customer-selected model id (e.g. "flux-pro", "dall-e-3"). */
     model?: string | null;
     seed?: string;
+    /** Public URL of a reference image to steer generation (img2img). */
+    referenceUrl?: string | null;
   }): Promise<{ images: GeneratedImage[]; units: number }>;
 }
 

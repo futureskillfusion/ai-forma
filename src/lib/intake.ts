@@ -1,6 +1,7 @@
 import "server-only";
 import type { Query } from "@prisma/client";
 import { db } from "./db";
+import { env } from "./env";
 import { HttpError } from "./rbac";
 import { verifyCustomerToken } from "./auth";
 import { imageGen, llm, booking, IMAGE_PROVIDER } from "./adapters";
@@ -10,6 +11,7 @@ import { logUsage } from "./usage";
 import { imageCost, llmCost } from "./pricing";
 import { deriveConfidenceTier } from "./confidence";
 import { tenantAcceptsIntake } from "./tenant-context";
+import { matchLibrary, libraryRoundImages } from "./image-library";
 
 /** Load the query a customer bearer token is bound to, or throw. */
 export async function requireCustomerQuery(req: Request): Promise<Query> {
@@ -53,12 +55,56 @@ export async function generateRound(query: Query) {
   await db.query.update({ where: { id: query.id }, data: { status: "generating" } });
 
   const prompt = buildPrompt(query, nextRound);
+
+  // 1) Curated library — if the idea matches an existing product line
+  //    (e.g. "grip"), show the real product photos instead of AI images.
+  const lib = matchLibrary(query.descriptionText);
+  if (lib) {
+    const urls = libraryRoundImages(lib, nextRound, 2);
+    await logUsage({
+      tenantId: query.tenantId,
+      queryId: query.id,
+      vendor: "image_gen",
+      costUsd: 0,
+      tokensOrUnits: urls.length,
+      meta: { round: nextRound, provider: "library", library: lib.id },
+    });
+    const createdLib = await db.$transaction(
+      urls.map((url) =>
+        db.variation.create({
+          data: {
+            queryId: query.id,
+            roundNumber: nextRound,
+            imageUrl: url,
+            generationPrompt: `${lib.label} (from product library)`,
+            feasibilityFlag: false,
+            feasibilityNotes: null,
+          },
+        }),
+      ),
+    );
+    await db.query.update({ where: { id: query.id }, data: { status: "rating" } });
+    return { round: nextRound, variations: createdLib, maxRounds: limit.maxRegenerationRounds };
+  }
+
+  // 2) Otherwise generate. If the customer attached a reference image or a
+  //    sketch, pass the newest one as an img2img steer.
+  const ref = await db.attachment.findFirst({
+    where: { queryId: query.id, kind: { in: ["reference", "drawing"] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  const referenceUrl = ref
+    ? `${env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "")}/api/attachments/${ref.id}`
+    : null;
+
   const { images, units } = await imageGen.generate({
     prompt,
     count: 2,
     tier: limit.imageModelTier,
     model: query.imageModelChoice,
     seed: `${query.id}:${nextRound}`,
+    referenceUrl,
   });
   await logUsage({
     tenantId: query.tenantId,

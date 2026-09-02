@@ -19,17 +19,19 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-function buildUrl(prompt: string, seed: number): string {
+function buildUrl(prompt: string, seed: number, referenceUrl?: string | null): string {
   const p = encodeURIComponent(prompt.slice(0, 380));
   const params = new URLSearchParams({
     width: "640",
     height: "640",
     seed: String(seed),
-    model: MODEL,
+    // img2img needs "flux"; plain text uses the faster "turbo".
+    model: referenceUrl ? "flux" : MODEL,
     nologo: "true",
     nofeed: "true",
     referrer: REFERRER,
   });
+  if (referenceUrl) params.set("image", referenceUrl);
   return `https://image.pollinations.ai/prompt/${p}?${params.toString()}`;
 }
 
@@ -42,8 +44,8 @@ export const pollinationsImageGen: ImageGenAdapter = {
     const images = Array.from({ length: count }, (_, i) => {
       const seed = (seedBase + i * 7919) % 2_000_000;
       return {
-        url: buildUrl(input.prompt, seed),
-        prompt: `${input.prompt} — concept ${i + 1}`,
+        url: buildUrl(input.prompt, seed, input.referenceUrl),
+        prompt: `${input.prompt} — concept ${i + 1}${input.referenceUrl ? " (from your reference)" : ""}`,
       };
     });
 
